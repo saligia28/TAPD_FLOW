@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+import argparse
+import os
+import sys
+
+REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+SRC = os.path.join(REPO, "src")
+if SRC not in sys.path:
+    sys.path.insert(0, SRC)
+
+from config import load_config  # type: ignore
+from tapd_client import TAPDClient  # type: ignore
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="modules", description="List TAPD modules in workspace")
+    args = parser.parse_args()
+
+    cfg = load_config()
+    tapd = TAPDClient(
+        cfg.tapd_api_key or "",
+        cfg.tapd_api_secret or "",
+        cfg.tapd_workspace_id or "",
+        api_user=cfg.tapd_api_user,
+        api_password=cfg.tapd_api_password,
+        token=cfg.tapd_token,
+        api_base=cfg.tapd_api_base,
+        modules_path=cfg.tapd_modules_path,
+    )
+    for i, m in enumerate(tapd.list_modules(), 1):
+        print(f"{i:02d}. {m.get('name')} (id={m.get('id')})")
+
+
+if __name__ == "__main__":
+    main()
+

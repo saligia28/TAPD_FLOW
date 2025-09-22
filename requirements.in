@@ -1,0 +1,8 @@
+# Top-level runtime dependencies (lock with: make lock)
+requests
+notion-client
+tenacity
+pydantic
+python-dotenv
+beautifulsoup4
+

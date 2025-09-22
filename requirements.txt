@@ -1,0 +1,9 @@
+# Core HTTP & utils
+requests>=2.31.0
+# Notion official Python SDK import name: notion_client (pip: notion-client)
+notion-client>=2.2.0
+# Reliability & config (optional)
+tenacity>=8.2.3
+pydantic>=2.7.0
+python-dotenv>=1.0.1
+beautifulsoup4>=4.12.2

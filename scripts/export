@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+import argparse
+import os
+import sys
+import json
+
+REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+SRC = os.path.join(REPO, "src")
+if SRC not in sys.path:
+    sys.path.insert(0, SRC)
+
+from config import load_config  # type: ignore
+from sync import run_export  # type: ignore
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="export", description="Export processed Notion items to JSON")
+    parser.add_argument("-o", "--owner", default=None, help="负责人包含（逗号分隔多个）")
+    parser.add_argument("-i", "--current-iteration", action="store_true", help="仅当前迭代（将通过 TAPD 校验）")
+    parser.add_argument("-m", "--module", default=None, help="模块名称包含（可选）")
+    parser.add_argument("-l", "--limit", type=int, default=50, help="每页数量（默认 50）")
+    parser.add_argument("-c", "--cursor", default=None, help="分页游标（Notion next_cursor）")
+    parser.add_argument("-O", "--out", default=None, help="输出文件路径（省略则打印到 stdout）")
+    args = parser.parse_args()
+
+    cfg = load_config()
+    res = run_export(
+        cfg,
+        owner_contains=args.owner,
+        current_iteration=args.current_iteration,
+        module_contains=args.module,
+        limit=max(1, int(args.limit)),
+        cursor=args.cursor,
+    )
+    data = json.dumps(res, ensure_ascii=False, indent=2)
+    if args.out:
+        with open(args.out, 'w', encoding='utf-8') as f:
+            f.write(data)
+        print(f"[export] wrote {len(res.get('items', []))} items to {args.out}; next_cursor={res.get('next_cursor')}")
+    else:
+        sys.stdout.write(data + "\n")
+
+
+if __name__ == "__main__":
+    main()
+

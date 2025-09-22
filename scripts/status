@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+import argparse
+import os
+import sys
+from typing import Optional, Dict, Any
+
+REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+SRC = os.path.join(REPO, "src")
+if SRC not in sys.path:
+    sys.path.insert(0, SRC)
+
+from config import load_config  # type: ignore
+from tapd_client import TAPDClient  # type: ignore
+from notion_wrapper import NotionWrapper  # type: ignore
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        prog="status",
+        description="Sync TAPD status options into Notion database select options",
+    )
+    parser.add_argument("-p", "--pages", type=int, default=10, help="抽样页数（默认 10）")
+    parser.add_argument("-l", "--limit", type=int, default=50, help="每页数量（默认 50）")
+    parser.add_argument("-i", "--current-iteration", action="store_true", help="仅抽样当前迭代以收集状态")
+    args = parser.parse_args()
+
+    cfg = load_config()
+    tapd = TAPDClient(
+        cfg.tapd_api_key or "",
+        cfg.tapd_api_secret or "",
+        cfg.tapd_workspace_id or "",
+        api_user=cfg.tapd_api_user,
+        api_password=cfg.tapd_api_password,
+        token=cfg.tapd_token,
+        api_base=cfg.tapd_api_base,
+        stories_path=cfg.tapd_stories_path,
+    )
+    notion = NotionWrapper(cfg.notion_token or "", cfg.notion_database_id or "")
+
+    base_filters: Optional[Dict[str, Any]] = None
+    if args.current_iteration:
+        cur = tapd.get_current_iteration()
+        if cur:
+            it_id = cur.get('id') or cur.get('iteration_id')
+            if it_id:
+                ks = getattr(cfg, 'tapd_filter_iteration_id_keys', []) or ['iteration_id']
+                base_filters = {ks[0]: it_id}
+
+    cnt = notion.sync_status_options_from_tapd(
+        tapd,
+        sample_pages=max(1, int(args.pages)),
+        page_size=max(1, int(args.limit)),
+        base_filters=base_filters,
+    )
+    print(f"[status] collected={cnt} and updated Notion status options")
+
+
+if __name__ == "__main__":
+    main()
+

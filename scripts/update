@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+# Simplified update wrapper.
+# Examples:
+#   python3 scripts/update            # update-all (dry-run) for owner=江林, 当前迭代
+#   python3 scripts/update -e         # execute update-all
+#   python3 scripts/update -N -l 100  # update-from-notion, limit 100 (dry-run)
+#   python3 scripts/update -i 123,456 -e -C   # update these IDs, create if missing
+
+from __future__ import annotations
+import argparse
+import os
+import sys
+from typing import List
+
+REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+SRC = os.path.join(REPO, "src")
+if SRC not in sys.path:
+    sys.path.insert(0, SRC)
+
+from config import load_config  # type: ignore
+from sync import run_update, run_update_all, run_update_from_notion  # type: ignore
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        prog="update",
+        description="Quick Notion update wrapper (short flags).",
+    )
+    p.add_argument("-e", "--execute", action="store_true", help="实际写入 Notion（默认 dry-run）")
+    p.add_argument("-A", "--all", action="store_true", help="更新全部（仅更新已存在页面），默认模式")
+    p.add_argument("-N", "--from-notion", action="store_true", help="从 Notion 现有页面出发（安全，仅更新）")
+    p.add_argument("-l", "--limit", type=int, default=None, help="--from-notion 时最多条数")
+
+    p.add_argument("-i", "--ids", default="", help="以逗号分隔的 TAPD 需求 ID 列表")
+    p.add_argument("-I", "--id", action="append", default=[], help="重复传多个 -I 指定单个 ID")
+    p.add_argument("-f", "--file", default=None, help="从文件读取需求 ID（每行一个）")
+    p.add_argument("-C", "--create-missing", action="store_true", help="当页面不存在时创建（仅对 -i/-I/-f 生效）")
+
+    p.add_argument("-o", "--owner", default=os.getenv("DEFAULT_OWNER", "江林"), help="负责人筛选（update-all 时生效）")
+    p.add_argument("-c", "--creator", default=None, help="创建人筛选（update-all 时生效）")
+    p.add_argument("-t", "--current-iteration", action="store_true", help="仅当前迭代（默认开启）")
+    return p.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    cfg = load_config()
+
+    has_id_inputs = bool(args.ids or args.id or args.file)
+    mode = "ids" if has_id_inputs else ("from-notion" if args.from_notion else "all")
+
+    owner = args.owner or os.getenv("DEFAULT_OWNER", "江林")
+    current_iter = args.current_iteration or True  # default on
+
+    if mode == "ids":
+        ids: List[str] = []
+        if args.ids:
+            ids.extend([s.strip() for s in str(args.ids).split(',') if s.strip()])
+        if args.id:
+            ids.extend([str(x).strip() for x in args.id if str(x).strip()])
+        if args.file:
+            try:
+                with open(args.file, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        s = line.strip()
+                        if s:
+                            ids.append(s)
+            except Exception as e:
+                print(f"[update] 读取文件失败: {e}")
+        dedup: List[str] = []
+        for x in ids:
+            if x and x not in dedup:
+                dedup.append(x)
+        if not dedup:
+            print("[update] 未提供任何需求 ID；请使用 -i/-I/-f")
+            return
+        run_update(cfg, dedup, dry_run=(not args.execute), create_missing=bool(args.create_missing))
+        return
+
+    if mode == "from-notion":
+        run_update_from_notion(cfg, dry_run=(not args.execute), limit=args.limit)
+        return
+
+    run_update_all(
+        cfg,
+        dry_run=(not args.execute),
+        owner=owner,
+        creator=args.creator,
+        current_iteration=bool(current_iter),
+    )
+
+
+if __name__ == "__main__":
+    main()

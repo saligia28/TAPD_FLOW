@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+# Simplified wrapper for common TAPD→Notion flows.
+# Usage examples:
+#   python3 scripts/pull            # dry-run sync since last for default scope
+#   python3 scripts/pull -e -f      # execute full sync
+#   python3 scripts/pull -o 江林 -i -e  # execute sync for owner 江林, current iteration
+
+from __future__ import annotations
+import argparse
+import os
+import sys
+from typing import Optional
+
+# Ensure src/ is importable when running from scripts/
+REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+SRC = os.path.join(REPO, "src")
+if SRC not in sys.path:
+    sys.path.insert(0, SRC)
+
+from config import load_config  # type: ignore
+from sync import run_sync, run_update_all, run_sync_by_modules  # type: ignore
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        prog="pull",
+        description="Quick TAPD→Notion sync wrapper (short flags).",
+    )
+    p.add_argument("-e", "--execute", action="store_true", help="实际写入 Notion（默认 dry-run）")
+    p.add_argument("-f", "--full", action="store_true", help="全量初始化（忽略 since 边界）")
+    p.add_argument("-s", "--since", default="last", help="增量边界，默认 last，可传 ISO 时间戳")
+    p.add_argument("-o", "--owner", default=os.getenv("DEFAULT_OWNER", "江林"), help="负责人筛选，默认 江林（可逗号分隔）")
+    p.add_argument("-c", "--creator", default=None, help="创建人筛选（显示名）")
+    p.add_argument("-i", "--current-iteration", action="store_true", help="仅同步当前迭代（建议开启）")
+    p.add_argument("-m", "--by-modules", action="store_true", help="按模块分组拉取（兼容多租户过滤键）")
+    p.add_argument("-w", "--wipe-first", action="store_true", help="写入前清空 Notion 数据库（危险）")
+    p.add_argument("-n", "--insert-only", action="store_true", help="仅新增（已存在的不更新）")
+    p.add_argument("-U", "--update-after", action="store_true", help="写入成功后，按相同范围执行一次 update-all")
+    p.add_argument("-P", "--no-post-update", action="store_true", help="禁止自动跟进更新（覆盖 -U 或默认行为）")
+    return p.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    cfg = load_config()
+
+    owner = args.owner or os.getenv("DEFAULT_OWNER", "江林")
+    current_iter = args.current_iteration or True  # default on
+
+    if args.by_modules:
+        run_sync_by_modules(
+            cfg,
+            full=bool(args.full),
+            since=None if args.full else str(args.since or "last"),
+            dry_run=(not args.execute),
+            owner=owner,
+            creator=args.creator,
+            wipe_first=bool(args.wipe_first),
+            insert_only=bool(args.insert_only),
+            current_iteration=bool(current_iter),
+        )
+    else:
+        run_sync(
+            cfg,
+            full=bool(args.full),
+            since=None if args.full else str(args.since or "last"),
+            dry_run=(not args.execute),
+            owner=owner,
+            creator=args.creator,
+            wipe_first=bool(args.wipe_first),
+            insert_only=bool(args.insert_only),
+            current_iteration=bool(current_iter),
+        )
+
+    do_follow_up = bool(args.update_after) or (args.execute and not args.no_post_update)
+    if do_follow_up:
+        run_update_all(
+            cfg,
+            dry_run=(not args.execute),
+            owner=owner,
+            creator=args.creator,
+            current_iteration=bool(current_iter),
+        )
+
+
+if __name__ == "__main__":
+    main()

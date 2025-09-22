@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+import argparse
+import os
+import sys
+
+REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+SRC = os.path.join(REPO, "src")
+if SRC not in sys.path:
+    sys.path.insert(0, SRC)
+
+from config import load_config  # type: ignore
+from tapd_client import TAPDClient  # type: ignore
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="auth", description="Test TAPD API authentication")
+    parser.add_argument("-v", "--verbose", action="store_true", help="print full response JSON")
+    args = parser.parse_args()
+
+    cfg = load_config()
+    tapd = TAPDClient(
+        cfg.tapd_api_key or "",
+        cfg.tapd_api_secret or "",
+        cfg.tapd_workspace_id or "",
+        api_user=cfg.tapd_api_user,
+        api_password=cfg.tapd_api_password,
+        token=cfg.tapd_token,
+        api_base=cfg.tapd_api_base,
+    )
+    try:
+        res = tapd.test_auth()
+        if args.verbose:
+            import json
+            print(json.dumps(res, ensure_ascii=False, indent=2))
+        else:
+            status = res.get("status") if isinstance(res, dict) else None
+            print(f"[auth] ok status={status}")
+    except Exception as e:
+        print(f"[auth] failed: {e}")
+
+
+if __name__ == "__main__":
+    main()
+

@@ -1,0 +1,20 @@
+# environment & secrets
+.env
+*.env
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# data & logs
+data/state.json
+data/cache/
+logs/
+
+# OS
+.DS_Store
+
+# AI
+AGENTS.md
