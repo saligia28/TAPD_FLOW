@@ -7,7 +7,7 @@
 ## 快速上手（使用说明）
 - 复制配置：`cp .env.example .env`，填入必需项
   - 必填：`TAPD_WORKSPACE_ID`、`TAPD_TOKEN`（或 `TAPD_API_USER`/`TAPD_API_PASSWORD`）、`NOTION_TOKEN`、`NOTION_DATABASE_ID`
-  - 可选：`DEFAULT_OWNER`（默认负责人，默认为“江林”）
+  - 可选：`DEFAULT_OWNER`（默认负责人，默认为“saligia”）
 - 安装依赖（二选一）
   - 一键：`make setup`
   - 手动：`python3 -m venv .venv && source .venv/bin/activate && python -m pip install -r requirements.txt`
@@ -17,7 +17,7 @@
   - 仅更新已存在页面：`python3 scripts/update -e`
   - 指定 ID 更新并创建缺失：`python3 scripts/update -i 123,456 -e -C`
   - 当前迭代/负责人过滤：加 `-i` / `-o 张三`
-  - 导出：`python3 scripts/export -o 江林 -i -l 50 -O out.json`
+  - 导出：`python3 scripts/export -o saligia -i -l 50 -O out.json`
   - 清库（危险）：`python3 scripts/wipe -e -d`
 - 定时任务（每小时）：见 `scripts/cron.sh`
 - 命令执行环境说明：
@@ -176,7 +176,7 @@ python3 scripts/pull -f
 # 实际写入：
 # python3 scripts/pull -f -e
 
-# 增量同步（常用；默认 owner=江林，当前迭代）
+# 增量同步（常用；默认 owner=saligia，当前迭代）
 python3 scripts/pull
 
 # 按模块遍历并分别同步（dry-run）；列出模块
@@ -195,9 +195,9 @@ python3 scripts/pull -n -e
 # 同步状态枚举到 Notion 数据库选项
 python3 scripts/status -i -p 10 -l 50
 
-# 只同步“江林”负责或创建的需求（可用 CLI 覆盖 .env）
-python3 scripts/pull -o 江林
-python3 scripts/pull -c 江林
+# 只同步“saligia”负责或创建的需求（可用 CLI 覆盖 .env）
+python3 scripts/pull -o saligia
+python3 scripts/pull -c saligia
 
 # 仅分析/重算功能点
 python3 scripts/analyze -t "作为用户..."
@@ -208,7 +208,7 @@ python3 scripts/analyze -t "作为用户..."
 python3 scripts/wipe -e -d
 
 # 导出 Notion 已处理数据（MCP 契约 JSON）
-python3 scripts/export -o 江林 -i -l 50 -O out.json
+python3 scripts/export -o saligia -i -l 50 -O out.json
 
 # 每小时增量同步一次
 0 * * * * cd /path/to/TAPD && /usr/bin/env -S bash -lc 'source .env && python3 scripts/pull >> logs/sync.log 2>&1'

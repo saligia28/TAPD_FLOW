@@ -18,3 +18,9 @@ logs/
 
 # AI
 AGENTS.md
+
+# self config
+.vscode/
+.idea/
+.cursor/
+.claude/
