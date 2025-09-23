@@ -20,7 +20,10 @@
   - 导出：`python3 scripts/export -o 江林 -i -l 50 -O out.json`
   - 清库（危险）：`python3 scripts/wipe -e -d`
 - 定时任务（每小时）：见 `scripts/cron.sh`
-- 提示：每次打开新的终端需要先 `source .venv/bin/activate`，或直接用 `make pull`/`make update`
+- 命令执行环境说明：
+  - `make pull`、`make update` 等 Make 目标默认调用 `.venv/bin/python`，因此需先运行 `make setup`（或手动创建 `.venv` 并安装依赖）。
+  - 如果不使用虚拟环境，可直接执行 `python3 scripts/update -e`、`python3 scripts/pull` 等命令，但请自行保证当前 Python 解释器已经安装了 `requirements.txt` 中的依赖。
+  - 打开新的终端后，若希望继续使用 `.venv`，记得 `source .venv/bin/activate` 再运行命令，或在命令前显式写 `./.venv/bin/python scripts/update ...`。
 
 ---
 

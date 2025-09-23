@@ -2,7 +2,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional, Set
 
 DATA_DIR = Path("data")
 STATE_FILE = DATA_DIR / "state.json"
@@ -40,3 +40,56 @@ def set_last_sync_at(ts: str) -> None:
     state = load_state()
     state["last_sync_at"] = ts
     save_state(state)
+
+
+def _normalize_ids(ids: Iterable[str]) -> Set[str]:
+    normalized: Set[str] = set()
+    for raw in ids:
+        try:
+            text = str(raw).strip()
+        except Exception:
+            continue
+        if text:
+            normalized.add(text)
+    return normalized
+
+
+def get_tracked_story_ids() -> Set[str]:
+    state = load_state()
+    raw = state.get("tracked_story_ids", [])
+    if isinstance(raw, list):
+        return _normalize_ids(raw)
+    if raw:
+        return _normalize_ids([raw])
+    return set()
+
+
+def set_tracked_story_ids(ids: Iterable[str]) -> None:
+    state = load_state()
+    cleaned = sorted(_normalize_ids(ids))
+    if cleaned:
+        state["tracked_story_ids"] = cleaned
+    else:
+        state.pop("tracked_story_ids", None)
+    save_state(state)
+
+
+def add_tracked_story_ids(ids: Iterable[str]) -> None:
+    new_ids = _normalize_ids(ids)
+    if not new_ids:
+        return
+    existing = get_tracked_story_ids()
+    if new_ids.issubset(existing):
+        return
+    set_tracked_story_ids(existing.union(new_ids))
+
+
+def remove_tracked_story_ids(ids: Iterable[str]) -> None:
+    drop_ids = _normalize_ids(ids)
+    if not drop_ids:
+        return
+    existing = get_tracked_story_ids()
+    remaining = existing.difference(drop_ids)
+    if remaining == existing:
+        return
+    set_tracked_story_ids(remaining)

@@ -4,6 +4,13 @@ import re
 import html as ihtml
 from bs4 import BeautifulSoup, NavigableString, Tag  # type: ignore
 from analyzer.image import analyze_images  # type: ignore
+from story_utils import (
+    extract_story_attachments,
+    extract_story_comments,
+    extract_story_tags,
+    summarize_attachment,
+    summarize_comment,
+)
 
 
 def html_to_text(html: str) -> str:
@@ -338,6 +345,36 @@ def build_page_blocks_from_story(story: Dict[str, Any]) -> List[Dict[str, Any]]:
             label = f"字段:{k}"
             blocks.append({"type": "heading_3", "heading_3": {"rich_text": [{"text": {"content": label[:50]}}]}})
             blocks.extend(sec_blocks)
+
+    tags = extract_story_tags(story)
+    if tags:
+        blocks.append({"type": "heading_2", "heading_2": {"rich_text": [{"text": {"content": "标签"}}]}})
+        for tag in tags[:30]:
+            txt = str(tag)[:120]
+            blocks.append({
+                "type": "bulleted_list_item",
+                "bulleted_list_item": {"rich_text": [{"text": {"content": txt}}]},
+            })
+
+    attachments = extract_story_attachments(story)
+    if attachments:
+        blocks.append({"type": "heading_2", "heading_2": {"rich_text": [{"text": {"content": "附件"}}]}})
+        for att in attachments[:20]:
+            txt = summarize_attachment(att)[:1900]
+            blocks.append({
+                "type": "bulleted_list_item",
+                "bulleted_list_item": {"rich_text": [{"text": {"content": txt}}]},
+            })
+
+    comments = extract_story_comments(story)
+    if comments:
+        blocks.append({"type": "heading_2", "heading_2": {"rich_text": [{"text": {"content": "评论"}}]}})
+        for cm in comments[:20]:
+            txt = summarize_comment(cm)[:1900]
+            blocks.append({
+                "type": "bulleted_list_item",
+                "bulleted_list_item": {"rich_text": [{"text": {"content": txt}}]},
+            })
 
     # Analysis on cleaned description text
     from analyzer.rule_based import analyze as _analyze  # local import to avoid cycle

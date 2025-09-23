@@ -36,6 +36,13 @@ class Config:
     tapd_stories_path: str = os.getenv("TAPD_STORIES_PATH", "/stories")
     tapd_modules_path: str = os.getenv("TAPD_MODULES_PATH", "/modules")
     tapd_iterations_path: str = os.getenv("TAPD_ITERATIONS_PATH", "/iterations")
+    tapd_story_tags_path: str = os.getenv("TAPD_STORY_TAGS_PATH", "/story_tags")
+    tapd_story_attachments_path: str = os.getenv("TAPD_STORY_ATTACHMENTS_PATH", "/story_attachments")
+    tapd_story_comments_path: str = os.getenv("TAPD_STORY_COMMENTS_PATH", "/story_comments")
+    tapd_fetch_tags: bool = os.getenv("TAPD_FETCH_TAGS", "1").strip().lower() in {"1", "true", "yes", "on"}
+    tapd_fetch_attachments: bool = os.getenv("TAPD_FETCH_ATTACHMENTS", "1").strip().lower() in {"1", "true", "yes", "on"}
+    tapd_fetch_comments: bool = os.getenv("TAPD_FETCH_COMMENTS", "1").strip().lower() in {"1", "true", "yes", "on"}
+    tapd_track_existing_ids: bool = os.getenv("TAPD_TRACK_EXISTING_IDS", "1").strip().lower() in {"1", "true", "yes", "on"}
     # Some tenants use different filter keys for stories-by-module; allow override
     tapd_module_filter_key: Optional[str] = os.getenv("TAPD_MODULE_FILTER_KEY")
 
@@ -70,6 +77,10 @@ def load_config() -> Config:
         raw = os.getenv(key, default)
         return [s.strip() for s in raw.split(',') if s.strip()]
 
+    def _flag(key: str, default: str = "1") -> bool:
+        raw = os.getenv(key, default)
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+
     cfg = Config(
         # AppKey/Secret (OpenAPI)
         tapd_api_key=os.getenv("TAPD_API_KEY"),
@@ -90,6 +101,13 @@ def load_config() -> Config:
         tapd_filter_module_id_keys=_csv("TAPD_FILTER_MODULE_ID_KEYS", "module_id,category_id,moduleid"),
         tapd_filter_module_name_keys=_csv("TAPD_FILTER_MODULE_NAME_KEYS", "module,category,module_name"),
         tapd_filter_iteration_id_keys=_csv("TAPD_FILTER_ITERATION_ID_KEYS", "iteration_id,sprint_id,iterationid"),
+        tapd_story_tags_path=os.getenv("TAPD_STORY_TAGS_PATH", "/story_tags"),
+        tapd_story_attachments_path=os.getenv("TAPD_STORY_ATTACHMENTS_PATH", "/story_attachments"),
+        tapd_story_comments_path=os.getenv("TAPD_STORY_COMMENTS_PATH", "/story_comments"),
+        tapd_fetch_tags=_flag("TAPD_FETCH_TAGS", "1"),
+        tapd_fetch_attachments=_flag("TAPD_FETCH_ATTACHMENTS", "1"),
+        tapd_fetch_comments=_flag("TAPD_FETCH_COMMENTS", "1"),
+        tapd_track_existing_ids=_flag("TAPD_TRACK_EXISTING_IDS", "1"),
     )
     return cfg
 

@@ -7,7 +7,7 @@ PY := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
 PIP_COMPILE := $(VENV)/bin/pip-compile
 
-.PHONY: help setup venv install dev-install lock pull update auth modules status wipe export analyze clean
+.PHONY: help setup venv install dev-install lock pull update auth modules status wipe export analyze clean test
 
 help:
 	@echo "Targets:"
@@ -58,6 +58,8 @@ export:
 analyze:
 	@$(PY) scripts/analyze $(ARGS)
 
+test:
+	@$(PY) -m pytest -q $(ARGS)
+
 clean:
 	rm -rf $(VENV)
-

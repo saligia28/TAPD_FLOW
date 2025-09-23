@@ -19,6 +19,14 @@ except Exception:
     def normalize_status(x):  # type: ignore
         return str(x) if x is not None else ""
 
+from story_utils import (
+    extract_story_attachments,
+    extract_story_comments,
+    extract_story_tags,
+    summarize_attachment,
+    summarize_comment,
+)
+
 
 class NotionWrapper:
     """Wrapper over Notion SDK with safe fallbacks for skeleton stage."""
@@ -32,6 +40,8 @@ class NotionWrapper:
         self._status_prop: Optional[str] = None
         self._desc_prop: Optional[str] = None
         self._id_prop: Optional[str] = None
+        self._id_prop_type: Optional[str] = None
+        self._id_prop_meta: Optional[Dict[str, Any]] = None
         self._module_prop: Optional[str] = None
         self._module_is_multi: bool = False
         # Extra properties
@@ -51,6 +61,12 @@ class NotionWrapper:
         self._fe_hours_prop: Optional[str] = None
         self._owner_prop: Optional[str] = None
         self._priority_prop: Optional[str] = None
+        self._tag_prop: Optional[str] = None
+        self._tag_prop_type: Optional[str] = None
+        self._attachment_prop: Optional[str] = None
+        self._attachment_prop_type: Optional[str] = None
+        self._comment_prop: Optional[str] = None
+        self._comment_prop_type: Optional[str] = None
         if self.client and self.database_id:
             self._inspect_database()
 
@@ -72,6 +88,10 @@ class NotionWrapper:
         try:
             db = self.client.databases.retrieve(self.database_id)  # type: ignore
             props: Dict[str, Any] = db.get("properties", {})
+            # Reset cached property metadata before re-detecting
+            self._id_prop = None
+            self._id_prop_type = None
+            self._id_prop_meta = None
             # title prop
             for name, meta in props.items():
                 if meta.get("type") == "title":
@@ -85,18 +105,24 @@ class NotionWrapper:
                         break
             # Detect ID prop
             allowed_types = {"rich_text", "title", "number", "url"}
-            id_candidates = []
+            id_candidates: List[Tuple[str, Dict[str, Any]]] = []
             for name, meta in props.items():
                 t = meta.get("type")
                 if t not in allowed_types:
                     continue
                 n = str(name)
                 if n == "TAPD_ID" or n == "需求ID" or ("ID" in n) or ("编号" in n):
-                    id_candidates.append(name)
-            if "TAPD_ID" in id_candidates:
-                self._id_prop = "TAPD_ID"
-            elif id_candidates:
-                self._id_prop = id_candidates[0]
+                    id_candidates.append((name, meta))
+            chosen: Optional[Tuple[str, Dict[str, Any]]] = None
+            for name, meta in id_candidates:
+                if name == "TAPD_ID":
+                    chosen = (name, meta)
+                    break
+            if not chosen and id_candidates:
+                chosen = id_candidates[0]
+            if chosen:
+                self._id_prop, self._id_prop_meta = chosen
+                self._id_prop_type = self._id_prop_meta.get("type")
             # rich_text desc prop (prefer keywords, exclude id prop)
             for name, meta in props.items():
                 if meta.get("type") == "rich_text" and name != self._id_prop and any(k in name for k in ("内容", "描述", "说明", "详情")):
@@ -190,6 +216,31 @@ class NotionWrapper:
                         best_name = name
                 if best_score > 0 and best_name:
                     self._fe_hours_prop = best_name
+            # Extended metadata fields for tags/attachments/comments
+            for name, meta in props.items():
+                t = meta.get("type")
+                lower = str(name).lower()
+                if (
+                    self._tag_prop is None
+                    and t in {"multi_select", "select", "rich_text"}
+                    and ("标签" in str(name) or "tag" in lower)
+                ):
+                    self._tag_prop = name
+                    self._tag_prop_type = t
+                if (
+                    self._attachment_prop is None
+                    and t in {"files", "rich_text", "url", "multi_select", "select"}
+                    and ("附件" in str(name) or "attachment" in lower or ("file" in lower and t == "files"))
+                ):
+                    self._attachment_prop = name
+                    self._attachment_prop_type = t
+                if (
+                    self._comment_prop is None
+                    and t in {"rich_text", "multi_select"}
+                    and ("评论" in str(name) or "comment" in lower)
+                ):
+                    self._comment_prop = name
+                    self._comment_prop_type = t
         except Exception:
             # Keep defaults None if schema fetch fails
             pass
@@ -316,6 +367,78 @@ class NotionWrapper:
             return num / 60.0
         # fallback: return numeric part
         return num
+
+    def _apply_extended_story_properties(self, props: Dict[str, Any], story: Dict[str, Any]) -> None:
+        tags = extract_story_tags(story)
+        if self._tag_prop and tags:
+            prop_type = self._tag_prop_type or ""
+            if prop_type == "multi_select":
+                options = [{"name": tag[:100]} for tag in tags[:100]]
+                if options:
+                    props[self._tag_prop] = {"multi_select": options}
+            elif prop_type == "select":
+                props[self._tag_prop] = {"select": {"name": tags[0][:100]}}
+            elif prop_type == "rich_text":
+                joined = ", ".join(tags)[:1800]
+                props[self._tag_prop] = {"rich_text": [{"text": {"content": joined}}]}
+
+        attachments = extract_story_attachments(story)
+        if self._attachment_prop and attachments:
+            prop_type = self._attachment_prop_type or ""
+            if prop_type == "files":
+                files_payload = []
+                for att in attachments[:20]:
+                    url = str(att.get("url") or "").strip()
+                    if not url:
+                        continue
+                    name = str(att.get("name") or "附件").strip() or "附件"
+                    files_payload.append(
+                        {
+                            "name": name[:100],
+                            "type": "external",
+                            "external": {"url": url},
+                        }
+                    )
+                if files_payload:
+                    props[self._attachment_prop] = {"files": files_payload}
+            elif prop_type == "rich_text":
+                lines = [summarize_attachment(att) for att in attachments[:10]]
+                if lines:
+                    joined = "\n".join(lines)[:1900]
+                    props[self._attachment_prop] = {"rich_text": [{"text": {"content": joined}}]}
+            elif prop_type == "url":
+                first_url = next((att.get("url") for att in attachments if att.get("url")), None)
+                if first_url:
+                    props[self._attachment_prop] = {"url": str(first_url)}
+            elif prop_type == "multi_select":
+                options = []
+                for att in attachments[:50]:
+                    label = str(att.get("name") or att.get("url") or "附件").strip()
+                    if label:
+                        options.append({"name": label[:100]})
+                if options:
+                    props[self._attachment_prop] = {"multi_select": options}
+            elif prop_type == "select":
+                label = str(attachments[0].get("name") or attachments[0].get("url") or "附件").strip()
+                if label:
+                    props[self._attachment_prop] = {"select": {"name": label[:100]}}
+
+        comments = extract_story_comments(story)
+        if self._comment_prop and comments:
+            prop_type = self._comment_prop_type or ""
+            if prop_type == "rich_text":
+                lines = [summarize_comment(cm) for cm in comments[:10]]
+                if lines:
+                    joined = "\n".join(lines)[:1800]
+                    props[self._comment_prop] = {"rich_text": [{"text": {"content": joined}}]}
+            elif prop_type == "multi_select":
+                options = []
+                for cm in comments[:25]:
+                    summary = summarize_comment(cm)
+                    if summary:
+                        options.append({"name": summary[:100]})
+                if options:
+                    props[self._comment_prop] = {"multi_select": options}
 
     # --- Detail subpage helpers ------------------------------------------
     def _archive_detail_subpages(self, parent_page_id: str) -> None:
@@ -626,6 +749,29 @@ class NotionWrapper:
         # Notion canonical URL without workspace context (best-effort)
         return f"https://www.notion.so/{page_id.replace('-', '')}"
 
+    def _build_id_prop_payload(self, tapd_id: str) -> Optional[Dict[str, Any]]:
+        if not self._id_prop or not tapd_id:
+            return None
+        prop_type = self._id_prop_type or "rich_text"
+        if prop_type == "rich_text":
+            return {"rich_text": [{"text": {"content": tapd_id}}]}
+        if prop_type == "title":
+            return {"title": [{"text": {"content": tapd_id}}]}
+        if prop_type == "number":
+            if tapd_id.isdigit():
+                try:
+                    return {"number": int(tapd_id)}
+                except ValueError:
+                    return None
+            try:
+                num_val = float(tapd_id)
+            except ValueError:
+                return None
+            return {"number": num_val}
+        if prop_type == "url":
+            return {"url": tapd_id}
+        return None
+
     def find_page_by_tapd_id(self, tapd_id: str) -> Optional[str]:
         """Return Notion page id if exists.
 
@@ -636,20 +782,56 @@ class NotionWrapper:
             return None
         # First try dedicated id property
         if self._id_prop:
-            try:
-                res = self.client.databases.query(
-                    database_id=self.database_id,
-                    filter={
+            tapd_id_str = str(tapd_id)
+            prop_type = self._id_prop_type or "rich_text"
+            filter_payload: Optional[Dict[str, Any]] = None
+            if prop_type == "rich_text":
+                filter_payload = {
+                    "property": self._id_prop,
+                    "rich_text": {"equals": tapd_id_str},
+                }
+            elif prop_type == "title":
+                filter_payload = {
+                    "property": self._id_prop,
+                    "title": {"equals": tapd_id_str},
+                }
+            elif prop_type == "number":
+                number_value: Optional[object] = None
+                if tapd_id_str.isdigit():
+                    try:
+                        number_value = int(tapd_id_str)
+                    except ValueError:
+                        number_value = None
+                if number_value is None:
+                    try:
+                        number_value = float(tapd_id_str)
+                    except ValueError:
+                        number_value = None
+                if number_value is not None:
+                    filter_payload = {
                         "property": self._id_prop,
-                        "rich_text": {"equals": str(tapd_id)},
-                    },
-                    page_size=1,
-                )
-                results = res.get("results", [])
-                if results:
-                    return results[0]["id"]
-            except Exception:
-                pass
+                        "number": {"equals": number_value},
+                    }
+            elif prop_type == "url":
+                filter_payload = {
+                    "property": self._id_prop,
+                    "url": {"equals": tapd_id_str},
+                }
+            if filter_payload:
+                try:
+                    res = self.client.databases.query(
+                        database_id=self.database_id,
+                        filter=filter_payload,
+                        page_size=1,
+                    )
+                    results = res.get("results", [])
+                    if results:
+                        return results[0]["id"]
+                except Exception as exc:
+                    print(
+                        f"[notion] TAPD_ID lookup failed for property {self._id_prop}"
+                        f" ({prop_type}): {exc}"
+                    )
         # Fallback: search in description rich_text
         if self._desc_prop:
             try:
@@ -710,7 +892,9 @@ class NotionWrapper:
         if self._status_prop and status_val:
             props[self._status_prop] = {"select": {"name": str(status_val)}}
         if self._id_prop and tapd_id:
-            props[self._id_prop] = {"rich_text": [{"text": {"content": str(tapd_id)}}]}
+            id_payload = self._build_id_prop_payload(str(tapd_id))
+            if id_payload is not None:
+                props[self._id_prop] = id_payload
         if self._desc_prop:
             desc = story.get("description") or ""
             if isinstance(desc, str) and ("<" in desc and ">" in desc):
@@ -902,6 +1086,9 @@ class NotionWrapper:
             if url and isinstance(url, str):
                 props[self._url_prop] = {"url": url}
         # Planned dates & frontend hours
+        self._apply_extended_story_properties(props, story)
+        self._apply_extended_story_properties(props, story)
+        self._apply_extended_story_properties(props, story)
         start_d, end_d = self._extract_dates(story)
         if self._planned_range_prop and (start_d or end_d):
             props[self._planned_range_prop] = {"date": {"start": start_d or end_d, "end": (end_d if start_d else None)}}
@@ -959,7 +1146,9 @@ class NotionWrapper:
             props[self._status_prop] = {"select": {"name": str(status_val)}}
         # Optional TAPD_ID prop
         if self._id_prop:
-            props[self._id_prop] = {"rich_text": [{"text": {"content": str(tapd_id)}}]}
+            id_payload = self._build_id_prop_payload(str(tapd_id))
+            if id_payload is not None:
+                props[self._id_prop] = id_payload
         # Description summary into rich_text prop (also embed TAPD_ID marker for fallback matching)
         if self._desc_prop:
             desc = story.get("description") or ""

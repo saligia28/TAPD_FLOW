@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Dict, Optional, Iterable, List
+from typing import Any, Dict, Optional, Iterable, List, Set
 
 # Use absolute imports so running `python3 src/cli.py` works without package context
 from config import Config
@@ -9,6 +9,228 @@ from analyzer.rule_based import analyze
 from mapper import map_story_to_notion_properties
 from content import build_blocks, build_page_blocks_from_story
 from state import store
+
+
+FRONTEND_KEY_TOKENS = ("前端", "frontend")
+_FRONTEND_LABEL_KEYS = (
+    "name",
+    "label",
+    "title",
+    "field",
+    "field_name",
+    "field_label",
+    "display_name",
+    "key",
+)
+_FRONTEND_VALUE_KEYS = (
+    "value",
+    "values",
+    "text",
+    "content",
+    "display_value",
+    "display",
+    "user",
+    "assignee",
+    "owner",
+)
+
+
+def _normalize_match_str(value: str) -> str:
+    return "".join(ch for ch in value if ch.isalnum())
+
+
+def _flatten_strings(value: Any, depth: int = 0, limit: int = 4) -> List[str]:
+    if depth > limit:
+        return []
+    if value is None:
+        return []
+    if isinstance(value, str):
+        stripped = value.strip()
+        return [stripped] if stripped else []
+    if isinstance(value, (int, float, bool)):
+        return [str(value)]
+    if isinstance(value, (list, tuple, set)):
+        out: List[str] = []
+        for item in value:
+            out.extend(_flatten_strings(item, depth + 1, limit))
+        return out
+    if isinstance(value, dict):
+        out: List[str] = []
+        for val in value.values():
+            out.extend(_flatten_strings(val, depth + 1, limit))
+        return out
+    try:
+        text = str(value).strip()
+    except Exception:
+        return []
+    return [text] if text else []
+
+
+def _dedup_preserve_order(items: Iterable[str]) -> List[str]:
+    seen: Set[str] = set()
+    out: List[str] = []
+    for item in items:
+        if item is None:
+            continue
+        text = str(item).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def _key_matches_frontend(name: str) -> bool:
+    if not name:
+        return False
+    low = name.lower()
+    for token in FRONTEND_KEY_TOKENS:
+        if token == token.lower():
+            if token in low:
+                return True
+        else:
+            if token in name:
+                return True
+    return False
+
+
+def _extract_labeled_frontend_values(entry: Dict[str, Any]) -> List[str]:
+    for label_key in _FRONTEND_LABEL_KEYS:
+        label = entry.get(label_key)
+        if isinstance(label, str) and _key_matches_frontend(label):
+            values: List[str] = []
+            for value_key in _FRONTEND_VALUE_KEYS:
+                if value_key in entry:
+                    values.extend(_flatten_strings(entry[value_key]))
+            if values:
+                return values
+            fallback: List[str] = []
+            for key, val in entry.items():
+                if key in _FRONTEND_LABEL_KEYS or key in _FRONTEND_VALUE_KEYS:
+                    continue
+                fallback.extend(_flatten_strings(val))
+            return fallback
+    return []
+
+
+def _collect_frontend_assignees(story: Dict[str, Any]) -> List[str]:
+    values: List[str] = []
+    seen: Set[int] = set()
+    stack: List[Any] = [story]
+    while stack:
+        current = stack.pop()
+        obj_id = id(current)
+        if obj_id in seen:
+            continue
+        seen.add(obj_id)
+        if isinstance(current, dict):
+            labeled = _extract_labeled_frontend_values(current)
+            if labeled:
+                values.extend(labeled)
+            for key, val in current.items():
+                if isinstance(key, str) and _key_matches_frontend(key):
+                    values.extend(_flatten_strings(val))
+                if isinstance(val, (dict, list, tuple, set)):
+                    stack.append(val)
+        elif isinstance(current, (list, tuple, set)):
+            for item in current:
+                if isinstance(item, (dict, list, tuple, set)):
+                    stack.append(item)
+    return _dedup_preserve_order(values)
+
+
+_OWNER_KEY_CANDIDATES = (
+    "owner",
+    "assignee",
+    "current_owner",
+    "owners",
+    "负责人",
+    "处理人",
+    "当前处理人",
+    "处理人员",
+    "经办人",
+    "执行人",
+)
+
+
+def _story_owner_tokens(story: Dict[str, Any]) -> List[str]:
+    tokens: List[str] = []
+    for key in _OWNER_KEY_CANDIDATES:
+        tokens.extend(_flatten_strings(story.get(key)))
+    tokens.extend(_collect_frontend_assignees(story))
+    return _dedup_preserve_order(tokens)
+
+
+def _story_matches_owner(story: Dict[str, Any], substrings: List[str]) -> bool:
+    if not substrings:
+        return True
+    candidates = _story_owner_tokens(story)
+    if not candidates:
+        return False
+    hay_raw = " ".join(candidates)
+    normalized_tokens = [_normalize_match_str(token) for token in candidates]
+    hay_norm = " ".join([token for token in normalized_tokens if token])
+    for sub in substrings:
+        if not sub:
+            continue
+        if sub in hay_raw:
+            return True
+        norm_sub = _normalize_match_str(sub)
+        if norm_sub and norm_sub in hay_norm:
+            return True
+    return False
+
+
+def _story_tapd_id(story: Dict[str, Any]) -> str:
+    raw_id = story.get("id") or story.get("story_id") or story.get("tapd_id")
+    if raw_id is None:
+        return ""
+    sid = str(raw_id).strip()
+    return sid
+
+def _enrich_story_with_extras(
+    tapd: TAPDClient,
+    cfg: Config,
+    story: Dict[str, Any],
+    *,
+    cache: Optional[Dict[str, Dict[str, Any]]] = None,
+    ctx: str = "sync",
+) -> None:
+    fetch_tags = getattr(cfg, "tapd_fetch_tags", False)
+    fetch_attachments = getattr(cfg, "tapd_fetch_attachments", False)
+    fetch_comments = getattr(cfg, "tapd_fetch_comments", False)
+    if not (fetch_tags or fetch_attachments or fetch_comments):
+        return
+    raw_id = story.get("id") or story.get("story_id") or story.get("tapd_id")
+    sid = str(raw_id).strip() if raw_id is not None else ""
+    if not sid:
+        return
+    extras: Dict[str, Any]
+    if cache is not None and sid in cache:
+        extras = cache[sid]
+    else:
+        extras = tapd.fetch_story_extras(
+            sid,
+            include_tags=fetch_tags,
+            include_attachments=fetch_attachments,
+            include_comments=fetch_comments,
+        )
+        if cache is not None:
+            cache[sid] = extras
+    errors = extras.pop("_errors", None)
+    if errors:
+        msg = "; ".join(str(e) for e in errors)
+        print(f"[{ctx}] extras warning id={sid}: {msg}")
+    for key, value in extras.items():
+        if key.startswith("_"):
+            continue
+        # Assign sanitized extras; copy lists/dicts to avoid accidental mutation
+        if isinstance(value, list):
+            story[key] = [dict(item) if isinstance(item, dict) else item for item in value]
+        elif isinstance(value, dict):
+            story[key] = dict(value)
+        else:
+            story[key] = value
 
 
 def run_sync(
@@ -34,8 +256,34 @@ def run_sync(
         token=cfg.tapd_token,
         api_base=cfg.tapd_api_base,
         stories_path=cfg.tapd_stories_path,
+        modules_path=cfg.tapd_modules_path,
+        iterations_path=cfg.tapd_iterations_path,
+        story_tags_path=getattr(cfg, "tapd_story_tags_path", "/story_tags"),
+        story_attachments_path=getattr(cfg, "tapd_story_attachments_path", "/story_attachments"),
+        story_comments_path=getattr(cfg, "tapd_story_comments_path", "/story_comments"),
     )
     notion = NotionWrapper(cfg.notion_token or "", cfg.notion_database_id or "")
+    extras_cache: Dict[str, Dict[str, Any]] = {}
+    tracked_enabled = getattr(cfg, "tapd_track_existing_ids", True)
+    tracked_ids: Set[str] = set()
+    existing_idx: Dict[str, str] = {}
+    existing_idx_loaded = False
+    if tracked_enabled:
+        try:
+            tracked_ids = store.get_tracked_story_ids()
+        except Exception as exc:
+            print(f"[sync] tracked-state load failed: {exc}")
+            tracked_ids = set()
+        if not tracked_ids and notion.client:
+            try:
+                existing_idx = notion.existing_index()
+                existing_idx_loaded = True
+                bootstrap_ids = list(existing_idx.keys())
+                if bootstrap_ids:
+                    tracked_ids.update(bootstrap_ids)
+                    print(f"[sync] bootstrap tracked stories from notion index count={len(tracked_ids)}")
+            except Exception as exc:
+                print(f"[sync] tracked bootstrap failed: {exc}")
 
     # Build filters: CLI overrides > config
     filters: Dict[str, object] = {}
@@ -85,27 +333,12 @@ def run_sync(
                 if detected_iter_key:
                     filters[detected_iter_key] = it_id
 
-    # Prepare local post-filters to enforce contains semantics
-    def _ensure_list(x) -> list:
-        if x is None:
-            return []
-        if isinstance(x, (list, tuple, set)):
-            return list(x)
-        return [str(x)]
-
     owner_subs: list[str] = []
     if only_owner:
         owner_subs = [s.strip() for s in str(only_owner).split(',') if s.strip()]
 
     def owner_matches(story: dict) -> bool:
-        if not owner_subs:
-            return True
-        fields = []
-        for key in ('owner', 'assignee', 'current_owner', 'owners'):
-            v = story.get(key)
-            fields.extend(_ensure_list(v))
-        hay = ' '.join([str(x) for x in fields])
-        return any(sub in hay for sub in owner_subs)
+        return _story_matches_owner(story, owner_subs)
 
     def iteration_matches(story: dict) -> bool:
         if not cur_iter:
@@ -133,25 +366,51 @@ def run_sync(
         last = None  # ignore since
 
     # Build existing index once when insert-only
-    existing_idx: Dict[str, str] = {}
     if insert_only and notion.client:
-        try:
-            existing_idx = notion.existing_index()
+        if not existing_idx_loaded:
+            try:
+                existing_idx = notion.existing_index()
+                existing_idx_loaded = True
+            except Exception as e:
+                print(f"[sync] build existing index failed: {e}")
+        if existing_idx:
             print(f"[sync] insert-only: existing TAPD_ID count={len(existing_idx)}")
-        except Exception as e:
-            print(f"[sync] build existing index failed: {e}")
 
     # Strict pipeline: 1) fetch all stories 2) analyze/normalize 3) write to Notion
     fetched: List[dict] = []
+    fetched_ids: Set[str] = set()
     for story in tapd.list_stories(updated_since=last, filters=filters or None):
-        # Local post-filters
-        if not owner_matches(story):
+        sid = _story_tapd_id(story)
+        is_tracked_story = tracked_enabled and sid and sid in tracked_ids
+        # Local post-filters (allow passthrough for tracked stories)
+        if not is_tracked_story and not owner_matches(story):
             continue
-        if not iteration_matches(story):
+        if not is_tracked_story and not iteration_matches(story):
             continue
         fetched.append(story)
+        if sid:
+            fetched_ids.add(sid)
+
+    if tracked_enabled:
+        missing_tracked = [sid for sid in tracked_ids if sid and sid not in fetched_ids]
+        if missing_tracked:
+            print(f"[sync] refreshing tracked stories count={len(missing_tracked)}")
+        for sid in missing_tracked:
+            try:
+                res = tapd.get_story(sid)
+            except Exception as exc:
+                print(f"[sync] refresh failed TAPD_ID={sid}: {exc}")
+                continue
+            story = _unwrap_story_payload(res)
+            if not isinstance(story, dict):
+                print(f"[sync] refresh skip TAPD_ID={sid} (unexpected payload)")
+                continue
+            story.setdefault("id", sid)
+            fetched.append(story)
+            fetched_ids.add(sid)
 
     count = 0
+    synced_ids: Set[str] = set()
     # Creation guard configuration (enforced only when creating new pages)
     creation_owner = cfg.creation_owner_substr or only_owner
     creation_owner_subs: list[str] = []
@@ -166,13 +425,7 @@ def run_sync(
             cur_iter = None
 
     def owner_matches_creation(story: dict) -> bool:
-        if not creation_owner_subs:
-            return True
-        vals = []
-        for key in ('owner', 'assignee', 'current_owner', 'owners'):
-            vals.extend(_ensure_list(story.get(key)))
-        hay = ' '.join([str(x) for x in vals])
-        return any(sub in hay for sub in creation_owner_subs)
+        return _story_matches_owner(story, creation_owner_subs)
 
     def iteration_matches_creation(story: dict) -> bool:
         if not require_cur_iter_for_create:
@@ -192,13 +445,13 @@ def run_sync(
 
     for story in fetched:
         count += 1
+        _enrich_story_with_extras(tapd, cfg, story, cache=extras_cache, ctx="sync")
         # Some TAPD records may carry description=None; coerce to empty string for analyzers
         text = story.get("description") or ""
         res = analyze(text)
         props = map_story_to_notion_properties(story)
         blocks = build_page_blocks_from_story(story)
-        raw_id = story.get('id')
-        tapd_id = str(raw_id) if raw_id is not None else ''
+        tapd_id = _story_tapd_id(story)
         if not tapd_id or tapd_id in ('', 'None', 'unknown'):
             print("[sync] skip story without valid TAPD id")
             continue
@@ -216,6 +469,7 @@ def run_sync(
                 print(f"[sync] would create TAPD_ID={tapd_id} title={props.get('Name')}")
             else:
                 page_id = notion.create_story_page(story, blocks)
+                synced_ids.add(tapd_id)
                 print(f"[sync] created page {page_id}")
         else:
             # For general upsert: update if exists; create only if meets creation guard
@@ -226,13 +480,21 @@ def run_sync(
                 existing_page = notion.find_page_by_tapd_id(tapd_id) or notion.find_page_by_title(story.get('name') or story.get('title') or '')
                 if existing_page:
                     page_id = notion.upsert_story_page(story, blocks)
+                    synced_ids.add(tapd_id)
                     print(f"[sync] upserted page {page_id}")
                 else:
                     if owner_matches_creation(story) and iteration_matches_creation(story):
                         page_id = notion.create_story_page(story, blocks)
+                        synced_ids.add(tapd_id)
                         print(f"[sync] created page {page_id}")
                     else:
                         print(f"[sync] skip create TAPD_ID={tapd_id} (not owned/current-iter)")
+
+    if not dry_run and tracked_enabled and synced_ids:
+        try:
+            store.add_tracked_story_ids(synced_ids)
+        except Exception as exc:
+            print(f"[sync] tracked-state update failed: {exc}")
 
     print(f"[sync] done | items={count}")
     # In real run: store.set_last_sync_at(now)
@@ -281,11 +543,19 @@ def run_update(
         token=cfg.tapd_token,
         api_base=cfg.tapd_api_base,
         stories_path=cfg.tapd_stories_path,
+        modules_path=cfg.tapd_modules_path,
+        iterations_path=cfg.tapd_iterations_path,
+        story_tags_path=getattr(cfg, "tapd_story_tags_path", "/story_tags"),
+        story_attachments_path=getattr(cfg, "tapd_story_attachments_path", "/story_attachments"),
+        story_comments_path=getattr(cfg, "tapd_story_comments_path", "/story_comments"),
     )
     notion = NotionWrapper(cfg.notion_token or "", cfg.notion_database_id or "")
 
     updated = 0
     skipped = 0
+    extras_cache: Dict[str, Dict[str, Any]] = {}
+    tracked_enabled = getattr(cfg, "tapd_track_existing_ids", True)
+    synced_ids: Set[str] = set()
     for sid in ids:
         sid = str(sid).strip()
         if not sid:
@@ -303,6 +573,7 @@ def run_update(
             continue
         # Ensure id present and consistent
         story.setdefault("id", sid)
+        _enrich_story_with_extras(tapd, cfg, story, cache=extras_cache, ctx="update")
 
         # Build blocks with latest analyzers
         text = story.get("description") or ""
@@ -325,8 +596,16 @@ def run_update(
                 pid = notion.upsert_story_page(story, blocks)
             else:
                 pid = notion.create_story_page(story, blocks)
+            if tracked_enabled:
+                synced_ids.add(sid)
             print(f"[update] {('updated' if page_id else 'created')} page {pid}")
             updated += 1
+
+    if not dry_run and tracked_enabled and synced_ids:
+        try:
+            store.add_tracked_story_ids(synced_ids)
+        except Exception as exc:
+            print(f"[update] tracked-state update failed: {exc}")
 
     print(f"[update] done | processed={updated} | skipped={skipped}")
 
@@ -355,6 +634,11 @@ def run_update_all(
         token=cfg.tapd_token,
         api_base=cfg.tapd_api_base,
         stories_path=cfg.tapd_stories_path,
+        modules_path=cfg.tapd_modules_path,
+        iterations_path=cfg.tapd_iterations_path,
+        story_tags_path=getattr(cfg, "tapd_story_tags_path", "/story_tags"),
+        story_attachments_path=getattr(cfg, "tapd_story_attachments_path", "/story_attachments"),
+        story_comments_path=getattr(cfg, "tapd_story_comments_path", "/story_comments"),
     )
     notion = NotionWrapper(cfg.notion_token or "", cfg.notion_database_id or "")
 
@@ -376,25 +660,12 @@ def run_update_all(
                 candidates = getattr(cfg, 'tapd_filter_iteration_id_keys', []) or ['iteration_id']
                 filters[candidates[0]] = it_id
 
-    def _ensure_list(x) -> list:
-        if x is None:
-            return []
-        if isinstance(x, (list, tuple, set)):
-            return list(x)
-        return [str(x)]
-
     owner_subs: list[str] = []
     if only_owner:
         owner_subs = [s.strip() for s in str(only_owner).split(',') if s.strip()]
 
     def owner_matches(story: dict) -> bool:
-        if not owner_subs:
-            return True
-        vals = []
-        for key in ('owner', 'assignee', 'current_owner', 'owners'):
-            vals.extend(_ensure_list(story.get(key)))
-        hay = ' '.join([str(x) for x in vals])
-        return any(sub in hay for sub in owner_subs)
+        return _story_matches_owner(story, owner_subs)
 
     def iteration_matches(story: dict) -> bool:
         if not cur_iter:
@@ -413,6 +684,9 @@ def run_update_all(
     updated = 0
     skipped = 0
     scanned = 0
+    extras_cache: Dict[str, Dict[str, Any]] = {}
+    tracked_enabled = getattr(cfg, "tapd_track_existing_ids", True)
+    synced_ids: Set[str] = set()
     for story in tapd.list_stories(updated_since=None, filters=filters or None):
         scanned += 1
         if not owner_matches(story) or not iteration_matches(story):
@@ -421,6 +695,7 @@ def run_update_all(
         tapd_id = str(raw_id) if raw_id is not None else ''
         if not tapd_id:
             continue
+        _enrich_story_with_extras(tapd, cfg, story, cache=extras_cache, ctx="update-all")
         text = story.get("description") or ""
         res_an = analyze(text)
         props = map_story_to_notion_properties(story)
@@ -430,6 +705,8 @@ def run_update_all(
             page_id = notion.find_page_by_tapd_id(tapd_id) or notion.find_page_by_title(story.get('name') or story.get('title') or '')
         else:
             page_id = notion.update_story_page_if_exists(story, blocks)
+            if tracked_enabled and page_id:
+                synced_ids.add(tapd_id)
         if not page_id:
             skipped += 1
             continue
@@ -441,6 +718,12 @@ def run_update_all(
             updated += 1
 
     print(f"[update-all] done | scanned={scanned} | updated={updated} | skipped_not_found={skipped}")
+
+    if not dry_run and tracked_enabled and synced_ids:
+        try:
+            store.add_tracked_story_ids(synced_ids)
+        except Exception as exc:
+            print(f"[update-all] tracked-state update failed: {exc}")
 
 def run_update_from_notion(
     cfg: Config,
@@ -464,6 +747,11 @@ def run_update_from_notion(
         token=cfg.tapd_token,
         api_base=cfg.tapd_api_base,
         stories_path=cfg.tapd_stories_path,
+        modules_path=cfg.tapd_modules_path,
+        iterations_path=cfg.tapd_iterations_path,
+        story_tags_path=getattr(cfg, "tapd_story_tags_path", "/story_tags"),
+        story_attachments_path=getattr(cfg, "tapd_story_attachments_path", "/story_attachments"),
+        story_comments_path=getattr(cfg, "tapd_story_comments_path", "/story_comments"),
     )
     notion = NotionWrapper(cfg.notion_token or "", cfg.notion_database_id or "")
 
@@ -472,6 +760,9 @@ def run_update_from_notion(
     if limit is not None:
         ids = ids[: max(0, int(limit))]
     updated = 0
+    extras_cache: Dict[str, Dict[str, Any]] = {}
+    tracked_enabled = getattr(cfg, "tapd_track_existing_ids", True)
+    synced_ids: Set[str] = set()
     for sid in ids:
         try:
             res = tapd.get_story(sid)
@@ -480,6 +771,7 @@ def run_update_from_notion(
             continue
         story = _unwrap_story_payload(res) or {}
         story.setdefault("id", sid)
+        _enrich_story_with_extras(tapd, cfg, story, cache=extras_cache, ctx="update-from-notion")
         text = story.get("description") or ""
         res_an = analyze(text)
         props = map_story_to_notion_properties(story)
@@ -491,11 +783,19 @@ def run_update_from_notion(
             pid = notion.update_story_page_if_exists(story, blocks)
             if pid:
                 print(f"[update-from-notion] updated page {pid}")
+                if tracked_enabled:
+                    synced_ids.add(sid)
                 updated += 1
             else:
                 # Should not happen since we got ids from index; still log
                 print(f"[update-from-notion] skip id={sid} (page not found)")
     print(f"[update-from-notion] done | updated={updated} | available={len(index)}")
+
+    if not dry_run and tracked_enabled and synced_ids:
+        try:
+            store.add_tracked_story_ids(synced_ids)
+        except Exception as exc:
+            print(f"[update-from-notion] tracked-state update failed: {exc}")
 
 
 def run_export(
@@ -820,6 +1120,10 @@ def run_sync_by_modules(
         api_base=cfg.tapd_api_base,
         stories_path=cfg.tapd_stories_path,
         modules_path=cfg.tapd_modules_path,
+        iterations_path=cfg.tapd_iterations_path,
+        story_tags_path=getattr(cfg, "tapd_story_tags_path", "/story_tags"),
+        story_attachments_path=getattr(cfg, "tapd_story_attachments_path", "/story_attachments"),
+        story_comments_path=getattr(cfg, "tapd_story_comments_path", "/story_comments"),
     )
     notion = NotionWrapper(cfg.notion_token or "", cfg.notion_database_id or "")
 
@@ -876,26 +1180,12 @@ def run_sync_by_modules(
                     base_filters[detected_iter_key] = it_id
 
     # Local filter helpers (same as above)
-    def _ensure_list(x) -> list:
-        if x is None:
-            return []
-        if isinstance(x, (list, tuple, set)):
-            return list(x)
-        return [str(x)]
-
     owner_subs: list[str] = []
     if owner or cfg.tapd_only_owner:
         owner_subs = [s.strip() for s in str(owner or cfg.tapd_only_owner).split(',') if s.strip()]
 
     def owner_matches(story: dict) -> bool:
-        if not owner_subs:
-            return True
-        fields = []
-        for key in ('owner', 'assignee', 'current_owner', 'owners'):
-            v = story.get(key)
-            fields.extend(_ensure_list(v))
-        hay = ' '.join([str(x) for x in fields])
-        return any(sub in hay for sub in owner_subs)
+        return _story_matches_owner(story, owner_subs)
 
     def iteration_matches(story: dict) -> bool:
         if not cur_iter:
@@ -999,13 +1289,7 @@ def run_sync_by_modules(
                 cur_iter = None
 
         def owner_matches_creation(story: dict) -> bool:
-            if not creation_owner_subs:
-                return True
-            vals = []
-            for key in ('owner', 'assignee', 'current_owner', 'owners'):
-                vals.extend(_ensure_list(story.get(key)))
-            hay = ' '.join([str(x) for x in vals])
-            return any(sub in hay for sub in creation_owner_subs)
+            return _story_matches_owner(story, creation_owner_subs)
 
         def iteration_matches_creation(story: dict) -> bool:
             if not require_cur_iter_for_create:
@@ -1034,6 +1318,7 @@ def run_sync_by_modules(
             # Ensure downstream Notion mapping sees the chosen module label
             if mod_label:
                 story.setdefault("module", mod_label)
+            _enrich_story_with_extras(tapd, cfg, story, cache=extras_cache, ctx="sync-mod")
             text = story.get("description") or ""
             res = analyze(text)
             props = map_story_to_notion_properties(story)
