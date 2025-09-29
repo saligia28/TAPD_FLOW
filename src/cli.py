@@ -5,6 +5,7 @@ from typing import Optional
 from config import load_config, validate_config
 from sync import run_sync
 from tapd_client import TAPDClient
+from testflow import TestFlowOptions, run_testflow
 
 
 def parse_args() -> argparse.Namespace:
@@ -66,6 +67,16 @@ def parse_args() -> argparse.Namespace:
     p_exp.add_argument("--limit", type=int, default=50, help="每页数量（默认 50）")
     p_exp.add_argument("--cursor", default=None, help="分页游标（Notion next_cursor）")
     p_exp.add_argument("--out", default=None, help="输出文件路径（省略则打印到 stdout）")
+
+    p_tf = sub.add_parser("testflow", help="生成测试用例并按测试人员导出 XMind")
+    p_tf.add_argument("--owner", default=None, help="仅处理该负责人（逗号分隔）")
+    p_tf.add_argument("--creator", default=None, help="仅处理该创建人")
+    p_tf.add_argument("--limit", type=int, default=None, help="最多处理需求数量")
+    p_tf.add_argument("--current-iteration", action="store_true", help="仅当前迭代")
+    p_tf.add_argument("--execute", action="store_true", help="实际生成 XMind 文件")
+    p_tf.add_argument("--send-mail", action="store_true", help="为测试人员发送邮件")
+    p_tf.add_argument("--ack", dest="ack", default=None, help="危险操作确认文案，如：我已知悉：拉取是严重危险操作")
+    p_tf.add_argument("--ack-mail", default=None, help="邮件发送确认文案，如：邮件发送风险已知悉")
     return parser.parse_args()
 
 
@@ -215,6 +226,29 @@ def main() -> None:
         # No write guards / acks
         from sync import run_update_from_notion
         run_update_from_notion(cfg, dry_run=(not args.execute), limit=args.limit)
+    elif args.cmd == "testflow":
+        cfg = load_config()
+        options = TestFlowOptions(
+            owner=args.owner,
+            creator=args.creator,
+            current_iteration=args.current_iteration,
+            limit=args.limit,
+            execute=args.execute,
+            send_mail=args.send_mail,
+            ack_pull=args.ack,
+            ack_mail=args.ack_mail,
+        )
+        result = run_testflow(cfg, options)
+        print(f"[testflow] {result.summary()}")
+        for attachment in result.attachments:
+            print(
+                f"  {attachment.tester.name}: {attachment.file_path} "
+                f"({attachment.case_count} cases)"
+            )
+        if result.mails:
+            print("[testflow] mail statuses:")
+            for email, status in result.mails.items():
+                print(f"  {email}: {status}")
     elif args.cmd == "export":
         cfg = load_config()
         from sync import run_export

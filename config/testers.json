@@ -1,0 +1,15 @@
+{
+  "testers": [
+    {
+      "name": "默认测试人员",
+      "email": "saligia28@126.com",
+      "aliases": ["saligia", "江林"],
+      "modules": []
+    },
+    {
+      "name": "张孝燕",
+      "email": "zhangxiaoyan@ihappy.net.cn",
+      "aliases": ["zhangxiaoyan", "张孝燕"]
+    }
+  ]
+}

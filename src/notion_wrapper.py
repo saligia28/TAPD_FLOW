@@ -12,12 +12,18 @@ except Exception:  # pragma: no cover - optional in skeleton
 
 # Late import to avoid hard dependency in minimal flows
 try:
-    from mapper import map_story_to_notion_properties, normalize_status  # type: ignore
+    from mapper import (
+        map_story_to_notion_properties,
+        normalize_status,
+        extract_status_label,
+    )  # type: ignore
 except Exception:
     def map_story_to_notion_properties(_: Dict[str, Any]) -> Dict[str, Any]:  # type: ignore
         return {}
     def normalize_status(x):  # type: ignore
         return str(x) if x is not None else ""
+    def extract_status_label(_: Dict[str, Any]) -> str:  # type: ignore
+        return ""
 
 from story_utils import (
     extract_story_attachments,
@@ -469,9 +475,9 @@ class NotionWrapper:
 
     def _status_from_story(self, story: Dict[str, Any]) -> Optional[str]:
         # Prefer human-readable labels when provided by TAPD API
-        val = story.get("v_status") or story.get("status_label") or story.get("status_name")
-        if val:
-            return str(val)
+        label = extract_status_label(story)
+        if label:
+            return str(label)
         raw = story.get("status") or story.get("current_status")
         lab = normalize_status(raw)
         return lab or (str(raw) if raw is not None else None)

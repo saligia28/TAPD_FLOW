@@ -19,6 +19,9 @@
   - 当前迭代/负责人过滤：加 `-i` / `-o 张三`
   - 导出：`python3 scripts/export -o saligia -i -l 50 -O out.json`
   - 清库（危险）：`python3 scripts/wipe -e -d`
+  - TestFlow（dry-run）：`python3 scripts/testflow --limit 5`
+  - TestFlow 实际生成：`python3 scripts/testflow --limit 5 --execute --ack "我已知悉：拉取是严重危险操作"`
+  - TestFlow 发送邮件：在上一步基础上追加 `--send-mail --ack-mail "邮件发送风险已知悉"`
 - 定时任务（每小时）：见 `scripts/cron.sh`
 - 命令执行环境说明：
   - `make pull`、`make update` 等 Make 目标默认调用 `.venv/bin/python`，因此需先运行 `make setup`（或手动创建 `.venv` 并安装依赖）。
@@ -38,6 +41,7 @@
   - 进阶：接入 LLM（需外网/API Key），或半自动人工确认流程。
 
 ---
+
 
 ## 2. 整体架构
 ```
@@ -198,6 +202,21 @@ python3 scripts/status -i -p 10 -l 50
 # 只同步“saligia”负责或创建的需求（可用 CLI 覆盖 .env）
 python3 scripts/pull -o saligia
 python3 scripts/pull -c saligia
+
+---
+
+## 11. TestFlow 自动化（需求 → 测试用例）
+- 目的：利用本地 Ollama 模型 `gpt-oss:20b` 自动生成测试用例，按测试人员拆分成 `.xmind` 并可选发送邮件。
+- 配置：
+  - `.env` 中补充 `OLLAMA_HOST`、`OLLAMA_MODEL`、`TESTFLOW_TESTERS_PATH` 等；
+  - 在 `config/testers.json` 中维护测试人员 → 邮箱映射（示例已预填 `saligia28@126.com`）；
+  - 若需真实邮件，请提供 `SMTP_HOST/PORT/USER/PASSWORD`，并设置 `TESTFLOW_MAIL_DRY_RUN=0`。
+- 命令：
+  - Dry-run：`python3 scripts/testflow --limit 5`
+  - 生成 XMind：`python3 scripts/testflow --execute --ack "我已知悉：拉取是严重危险操作"`
+  - 发送邮件：在上一步基础上追加 `--send-mail --ack-mail "邮件发送风险已知悉"`
+- 输出：附件保存在 `data/testflow/`，文件名形如 `测试人员_YYYYMMDD_HHMMSS.xmind`；目录已加入 `.gitignore`。
+- 更多待办与需求信息见 `TestFlow.md` 与 `feature.md`。
 
 # 仅分析/重算功能点
 python3 scripts/analyze -t "作为用户..."

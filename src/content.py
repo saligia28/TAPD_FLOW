@@ -1,7 +1,8 @@
 from __future__ import annotations
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 import re
 import html as ihtml
+from typing import TYPE_CHECKING
 from bs4 import BeautifulSoup, NavigableString, Tag  # type: ignore
 from analyzer.image import analyze_images  # type: ignore
 from story_utils import (
@@ -11,6 +12,9 @@ from story_utils import (
     summarize_attachment,
     summarize_comment,
 )
+
+if TYPE_CHECKING:  # pragma: no cover
+    from config import Config
 
 
 def html_to_text(html: str) -> str:
@@ -40,7 +44,14 @@ def html_to_text(html: str) -> str:
     return s.strip()
 
 
-def build_blocks(description: str, analysis: Dict[str, Any], feature_points: List[str]) -> list:
+def build_blocks(
+    description: str,
+    analysis: Dict[str, Any],
+    feature_points: List[str],
+    *,
+    story_id: Optional[str] = None,
+    cache_dir: Optional[str] = None,
+) -> list:
     """Build Notion block payloads. Skeleton structure, SDK-specific later."""
     blocks: list = []
 
@@ -58,7 +69,7 @@ def build_blocks(description: str, analysis: Dict[str, Any], feature_points: Lis
             blocks.extend(html_blocks)
             # Analyze images (best-effort)
             if img_urls:
-                img_infos = analyze_images(img_urls)
+                img_infos = analyze_images(img_urls, story_id=story_id, cache_dir=cache_dir)
         else:
             # Fallback to plain text
             desc = html_to_text(desc)
@@ -102,16 +113,18 @@ def build_blocks(description: str, analysis: Dict[str, Any], feature_points: Lis
         })
         for info in img_infos:
             summ = []
-            if info.get("format") and (info.get("width") and info.get("height")):
+            desc = info.get("description")
+            if desc:
+                summ.append(desc)
+            elif info.get("format") and (info.get("width") and info.get("height")):
                 summ.append(f"{info['format']} {info['width']}x{info['height']}")
-            if info.get("avg_color"):
-                r, g, b = info["avg_color"]
-                summ.append(f"平均色: RGB({r},{g},{b})")
             if info.get("content_type") and not summ:
-                summ.append(info["content_type"]) 
+                summ.append(info["content_type"])
             if info.get("reason") and not info.get("ok"):
                 summ.append(f"解析失败: {info['reason']}")
-            text = f"{info.get('url','')}{' — ' + ', '.join(summ) if summ else ''}"
+            text = info.get('url','')
+            if summ:
+                text = f"{text} — {'; '.join(summ)}"
             blocks.append({
                 "type": "bulleted_list_item",
                 "bulleted_list_item": {"rich_text": [{"text": {"content": text[:1800]}}]},
@@ -281,7 +294,11 @@ def _blocks_from_text(value: str) -> List[Dict[str, Any]]:
     return blocks
 
 
-def build_page_blocks_from_story(story: Dict[str, Any]) -> List[Dict[str, Any]]:
+def build_page_blocks_from_story(
+    story: Dict[str, Any],
+    *,
+    cfg: Optional["Config"] = None,
+) -> List[Dict[str, Any]]:
     """Aggregate a story's content and render as Notion blocks.
 
     - Prefer HTML-aware rendering for any field containing HTML
@@ -299,7 +316,11 @@ def build_page_blocks_from_story(story: Dict[str, Any]) -> List[Dict[str, Any]]:
                 blocks.append({"type": "heading_2", "heading_2": {"rich_text": [{"text": {"content": "原始描述"}}]}})
                 blocks.extend(html_blocks)
             if img_urls:
-                img_infos = analyze_images(img_urls)
+                img_infos = analyze_images(
+                    img_urls,
+                    story_id=_story_id_for_cache(story),
+                    cache_dir=(cfg.image_cache_dir if cfg else None),
+                )
         else:
             blocks.append({"type": "heading_2", "heading_2": {"rich_text": [{"text": {"content": "原始描述"}}]}})
             blocks.extend(_blocks_from_text(desc_raw))
@@ -377,11 +398,14 @@ def build_page_blocks_from_story(story: Dict[str, Any]) -> List[Dict[str, Any]]:
             })
 
     # Analysis on cleaned description text
-    from analyzer.rule_based import analyze as _analyze  # local import to avoid cycle
+    from analyzer import run_analysis as _run_analysis  # local import to avoid cycle
     desc_for_nlp = html_to_text(desc_raw) if _str_has_html(desc_raw) else desc_raw
-    res = _analyze(desc_for_nlp or "")
+    res = _run_analysis(desc_for_nlp or "", cfg=cfg, story=story)
     analysis = res.get("analysis", {}) if isinstance(res, dict) else {}
     feature_points = res.get("feature_points", []) if isinstance(res, dict) else []
+    ai_insights = res.get("ai_insights") if isinstance(res, dict) else None
+    ai_test_points = res.get("ai_test_points") if isinstance(res, dict) else []
+    ai_error = res.get("ai_error") if isinstance(res, dict) else None
 
     if analysis:
         blocks.append({"type": "heading_2", "heading_2": {"rich_text": [{"text": {"content": "内容分析"}}]}})
@@ -394,20 +418,66 @@ def build_page_blocks_from_story(story: Dict[str, Any]) -> List[Dict[str, Any]]:
         for p in feature_points:
             blocks.append({"type": "bulleted_list_item", "bulleted_list_item": {"rich_text": [{"text": {"content": (p or "")[:200]}}]}})
 
+    if ai_insights:
+        blocks.append({"type": "heading_2", "heading_2": {"rich_text": [{"text": {"content": "AI 分析"}}]}})
+        summary = ai_insights.get("summary") if isinstance(ai_insights, dict) else None
+        if summary:
+            blocks.append({"type": "paragraph", "paragraph": {"rich_text": [{"text": {"content": summary[:1900]}}]}})
+        for key, label in (
+            ("key_features", "核心要点"),
+            ("risks", "潜在风险"),
+            ("acceptance", "验收关注"),
+        ):
+            values = ai_insights.get(key) if isinstance(ai_insights, dict) else None
+            if not values:
+                continue
+            blocks.append({"type": "heading_3", "heading_3": {"rich_text": [{"text": {"content": label}}]}})
+            for item in values[:15]:
+                blocks.append({
+                    "type": "bulleted_list_item",
+                    "bulleted_list_item": {"rich_text": [{"text": {"content": str(item)[:200]}}]},
+                })
+
+    if ai_test_points:
+        blocks.append({"type": "heading_2", "heading_2": {"rich_text": [{"text": {"content": "AI 测试点"}}]}})
+        for item in ai_test_points[:20]:
+            blocks.append({
+                "type": "bulleted_list_item",
+                "bulleted_list_item": {"rich_text": [{"text": {"content": str(item)[:220]}}]},
+            })
+
+    if ai_error:
+        blocks.append({
+            "type": "callout",
+            "callout": {
+                "icon": {"emoji": "⚠️"},
+                "rich_text": [{"text": {"content": f"AI 分析失败: {ai_error}"[:1900]}}],
+            },
+        })
+
     if img_infos:
         blocks.append({"type": "heading_2", "heading_2": {"rich_text": [{"text": {"content": "图片分析"}}]}})
         for info in img_infos:
             summ = []
-            if info.get("format") and (info.get("width") and info.get("height")):
+            desc = info.get("description")
+            if desc:
+                summ.append(desc)
+            elif info.get("format") and (info.get("width") and info.get("height")):
                 summ.append(f"{info['format']} {info['width']}x{info['height']}")
-            if info.get("avg_color"):
-                r, g, b = info["avg_color"]
-                summ.append(f"平均色: RGB({r},{g},{b})")
             if info.get("content_type") and not summ:
-                summ.append(info["content_type"]) 
+                summ.append(info["content_type"])
             if info.get("reason") and not info.get("ok"):
                 summ.append(f"解析失败: {info['reason']}")
-            text = f"{info.get('url','')}{' — ' + ', '.join(summ) if summ else ''}"
+            text = info.get('url','')
+            if summ:
+                text = f"{text} — {'; '.join(summ)}"
             blocks.append({"type": "bulleted_list_item", "bulleted_list_item": {"rich_text": [{"text": {"content": text[:1800]}}]}})
 
     return blocks
+
+
+def _story_id_for_cache(story: Dict[str, Any]) -> Optional[str]:
+    sid = story.get("id") or story.get("story_id") or story.get("tapd_id")
+    if sid is None:
+        return None
+    return str(sid)

@@ -1,4 +1,6 @@
 from __future__ import annotations
+from dataclasses import dataclass
+import time
 from typing import Any, Dict, Optional, Iterable, List, Set
 
 # Use absolute imports so running `python3 src/cli.py` works without package context
@@ -9,9 +11,29 @@ from analyzer.rule_based import analyze
 from mapper import map_story_to_notion_properties
 from content import build_blocks, build_page_blocks_from_story
 from state import store
+from testflow.service import generate_testflow_for_stories
 
 
 FRONTEND_KEY_TOKENS = ("前端", "frontend")
+
+
+@dataclass
+class SyncResult:
+    total: int
+    created: int
+    existing: int
+    skipped: int
+    duration: float
+    dry_run: bool
+
+
+@dataclass
+class UpdateAllResult:
+    scanned: int
+    updated: int
+    skipped: int
+    duration: float
+    dry_run: bool
 _FRONTEND_LABEL_KEYS = (
     "name",
     "label",
@@ -243,7 +265,8 @@ def run_sync(
     wipe_first: bool = False,
     insert_only: bool = False,
     current_iteration: bool = False,
-) -> None:
+) -> SyncResult:
+    start_ts = time.perf_counter()
     last = None if full else (since or store.get_last_sync_at())
     print(f"[sync] start | full={full} | since={last} | wipe_first={wipe_first} | insert_only={insert_only}")
 
@@ -377,19 +400,27 @@ def run_sync(
             print(f"[sync] insert-only: existing TAPD_ID count={len(existing_idx)}")
 
     # Strict pipeline: 1) fetch all stories 2) analyze/normalize 3) write to Notion
-    fetched: List[dict] = []
+    all_stories: List[dict] = []
+    notion_candidates: List[dict] = []
+    notion_seen: Set[str] = set()
     fetched_ids: Set[str] = set()
     for story in tapd.list_stories(updated_since=last, filters=filters or None):
         sid = _story_tapd_id(story)
+        matches_iteration = iteration_matches(story)
+        if matches_iteration:
+            all_stories.append(story)
+            if sid:
+                fetched_ids.add(sid)
         is_tracked_story = tracked_enabled and sid and sid in tracked_ids
-        # Local post-filters (allow passthrough for tracked stories)
-        if not is_tracked_story and not owner_matches(story):
+        matches_owner = owner_matches(story)
+        if not matches_iteration and not is_tracked_story:
             continue
-        if not is_tracked_story and not iteration_matches(story):
-            continue
-        fetched.append(story)
-        if sid:
-            fetched_ids.add(sid)
+        if is_tracked_story or matches_owner:
+            if sid and sid in notion_seen:
+                continue
+            notion_candidates.append(story)
+            if sid:
+                notion_seen.add(sid)
 
     if tracked_enabled:
         missing_tracked = [sid for sid in tracked_ids if sid and sid not in fetched_ids]
@@ -406,10 +437,28 @@ def run_sync(
                 print(f"[sync] refresh skip TAPD_ID={sid} (unexpected payload)")
                 continue
             story.setdefault("id", sid)
-            fetched.append(story)
-            fetched_ids.add(sid)
+            all_stories.append(story)
+            if sid:
+                fetched_ids.add(sid)
+                if sid not in notion_seen:
+                    notion_candidates.append(story)
+                    notion_seen.add(sid)
+
+    if all_stories:
+        execute_testflow = not dry_run
+        tf_result = generate_testflow_for_stories(cfg, all_stories, execute=execute_testflow)
+        print(
+            f"[sync] testflow | stories={tf_result.total_stories} "
+            f"cases={tf_result.total_cases} attachments={len(tf_result.attachments)} "
+            f"execute={execute_testflow}"
+        )
+    else:
+        tf_result = None
 
     count = 0
+    created_count = 0
+    existing_count = 0
+    skipped_count = 0
     synced_ids: Set[str] = set()
     # Creation guard configuration (enforced only when creating new pages)
     creation_owner = cfg.creation_owner_substr or only_owner
@@ -443,14 +492,14 @@ def run_sync(
                 return True
         return False
 
-    for story in fetched:
+    for story in notion_candidates:
         count += 1
         _enrich_story_with_extras(tapd, cfg, story, cache=extras_cache, ctx="sync")
         # Some TAPD records may carry description=None; coerce to empty string for analyzers
         text = story.get("description") or ""
         res = analyze(text)
         props = map_story_to_notion_properties(story)
-        blocks = build_page_blocks_from_story(story)
+        blocks = build_page_blocks_from_story(story, cfg=cfg)
         tapd_id = _story_tapd_id(story)
         if not tapd_id or tapd_id in ('', 'None', 'unknown'):
             print("[sync] skip story without valid TAPD id")
@@ -460,21 +509,34 @@ def run_sync(
             exists = tapd_id in existing_idx if existing_idx else bool(notion.find_page_by_tapd_id(tapd_id))
             if exists:
                 print(f"[sync] skip existing TAPD_ID={tapd_id}")
+                existing_count += 1
                 continue
             # enforce creation guard
             if not owner_matches_creation(story) or not iteration_matches_creation(story):
                 print(f"[sync] skip create TAPD_ID={tapd_id} (not owned/current-iter)")
+                skipped_count += 1
                 continue
             if dry_run:
                 print(f"[sync] would create TAPD_ID={tapd_id} title={props.get('Name')}")
+                created_count += 1
             else:
                 page_id = notion.create_story_page(story, blocks)
                 synced_ids.add(tapd_id)
                 print(f"[sync] created page {page_id}")
+                created_count += 1
         else:
             # For general upsert: update if exists; create only if meets creation guard
             if dry_run:
-                print(f"[sync] would upsert TAPD_ID={tapd_id} title={props.get('Name')}")
+                existing_page = notion.find_page_by_tapd_id(tapd_id) or notion.find_page_by_title(story.get('name') or story.get('title') or '')
+                if existing_page:
+                    print(f"[sync] would update TAPD_ID={tapd_id} title={props.get('Name')}")
+                    existing_count += 1
+                elif owner_matches_creation(story) and iteration_matches_creation(story):
+                    print(f"[sync] would create TAPD_ID={tapd_id} title={props.get('Name')}")
+                    created_count += 1
+                else:
+                    print(f"[sync] skip create TAPD_ID={tapd_id} (not owned/current-iter)")
+                    skipped_count += 1
             else:
                 # detect existence
                 existing_page = notion.find_page_by_tapd_id(tapd_id) or notion.find_page_by_title(story.get('name') or story.get('title') or '')
@@ -482,13 +544,16 @@ def run_sync(
                     page_id = notion.upsert_story_page(story, blocks)
                     synced_ids.add(tapd_id)
                     print(f"[sync] upserted page {page_id}")
+                    existing_count += 1
                 else:
                     if owner_matches_creation(story) and iteration_matches_creation(story):
                         page_id = notion.create_story_page(story, blocks)
                         synced_ids.add(tapd_id)
                         print(f"[sync] created page {page_id}")
+                        created_count += 1
                     else:
                         print(f"[sync] skip create TAPD_ID={tapd_id} (not owned/current-iter)")
+                        skipped_count += 1
 
     if not dry_run and tracked_enabled and synced_ids:
         try:
@@ -496,8 +561,17 @@ def run_sync(
         except Exception as exc:
             print(f"[sync] tracked-state update failed: {exc}")
 
-    print(f"[sync] done | items={count}")
+    print(f"[sync] done | items={count} | created={created_count} | existing={existing_count} | skipped={skipped_count}")
+    duration = time.perf_counter() - start_ts
     # In real run: store.set_last_sync_at(now)
+    return SyncResult(
+        total=count,
+        created=created_count,
+        existing=existing_count,
+        skipped=skipped_count,
+        duration=duration,
+        dry_run=dry_run,
+    )
 
 
 def _unwrap_story_payload(obj: dict) -> Optional[dict]:
@@ -579,7 +653,7 @@ def run_update(
         text = story.get("description") or ""
         res_an = analyze(text)
         props = map_story_to_notion_properties(story)
-        blocks = build_page_blocks_from_story(story)
+        blocks = build_page_blocks_from_story(story, cfg=cfg)
 
         page_id = notion.find_page_by_tapd_id(sid)
         if not page_id and not create_missing:
@@ -617,13 +691,14 @@ def run_update_all(
     owner: Optional[str] = None,
     creator: Optional[str] = None,
     current_iteration: bool = False,
-) -> None:
+) -> UpdateAllResult:
     """Update-only pipeline over TAPD stories.
 
     - Iterate TAPD list_stories with optional filters
     - For each story, find Notion page by TAPD_ID; if exists update content/properties
     - If Notion page does not exist, skip (never create)
     """
+    start_ts = time.perf_counter()
     print(f"[update-all] start | dry_run={dry_run}")
     tapd = TAPDClient(
         cfg.tapd_api_key or "",
@@ -699,7 +774,7 @@ def run_update_all(
         text = story.get("description") or ""
         res_an = analyze(text)
         props = map_story_to_notion_properties(story)
-        blocks = build_page_blocks_from_story(story)
+        blocks = build_page_blocks_from_story(story, cfg=cfg)
         # Update-only: try match by TAPD_ID or title (compute blocks first for update path)
         if dry_run:
             page_id = notion.find_page_by_tapd_id(tapd_id) or notion.find_page_by_title(story.get('name') or story.get('title') or '')
@@ -717,13 +792,24 @@ def run_update_all(
             print(f"[update-all] updated page {page_id}")
             updated += 1
 
-    print(f"[update-all] done | scanned={scanned} | updated={updated} | skipped_not_found={skipped}")
+    duration = time.perf_counter() - start_ts
+    print(
+        f"[update-all] done | scanned={scanned} | updated={updated} | "
+        f"skipped_not_found={skipped} | duration={duration:.2f}s"
+    )
 
     if not dry_run and tracked_enabled and synced_ids:
         try:
             store.add_tracked_story_ids(synced_ids)
         except Exception as exc:
             print(f"[update-all] tracked-state update failed: {exc}")
+    return UpdateAllResult(
+        scanned=scanned,
+        updated=updated,
+        skipped=skipped,
+        duration=duration,
+        dry_run=dry_run,
+    )
 
 def run_update_from_notion(
     cfg: Config,
@@ -775,7 +861,7 @@ def run_update_from_notion(
         text = story.get("description") or ""
         res_an = analyze(text)
         props = map_story_to_notion_properties(story)
-        blocks = build_page_blocks_from_story(story)
+        blocks = build_page_blocks_from_story(story, cfg=cfg)
         if dry_run:
             print(f"[update-from-notion] would update id={sid} title={props.get('Name')}")
             updated += 1
@@ -1106,7 +1192,8 @@ def run_sync_by_modules(
     wipe_first: bool = False,
     insert_only: bool = False,
     current_iteration: bool = False,
-) -> None:
+) -> SyncResult:
+    start_ts = time.perf_counter()
     last = None if full else (since or store.get_last_sync_at())
     print(f"[sync-mod] start | full={full} | since={last} | wipe_first={wipe_first} | insert_only={insert_only}")
 
@@ -1252,7 +1339,12 @@ def run_sync_by_modules(
         except Exception as e:
             print(f"[sync-mod] build existing index failed: {e}")
 
+    extras_cache: Dict[str, Dict[str, Any]] = {}
+
     total = 0
+    created_total = 0
+    existing_total = 0
+    skipped_total = 0
     for mod in modules:
         mod_id = mod.get("id")
         mod_name = mod.get("name") or mod_id
@@ -1322,7 +1414,7 @@ def run_sync_by_modules(
             text = story.get("description") or ""
             res = analyze(text)
             props = map_story_to_notion_properties(story)
-            blocks = build_page_blocks_from_story(story)
+            blocks = build_page_blocks_from_story(story, cfg=cfg)
             raw_id = story.get('id')
             tapd_id = str(raw_id) if raw_id is not None else ''
             if not tapd_id or tapd_id in ('', 'None', 'unknown'):
@@ -1332,30 +1424,58 @@ def run_sync_by_modules(
                 exists = tapd_id in existing_idx if existing_idx else bool(notion.find_page_by_tapd_id(tapd_id))
                 if exists:
                     print(f"[sync-mod] skip existing module={mod_name} TAPD_ID={tapd_id}")
+                    existing_total += 1
                     continue
                 if not owner_matches_creation(story) or not iteration_matches_creation(story):
                     print(f"[sync-mod] skip create module={mod_name} TAPD_ID={tapd_id} (not owned/current-iter)")
+                    skipped_total += 1
                     continue
                 if dry_run:
                     print(f"[sync-mod] would create module={mod_name} TAPD_ID={tapd_id} title={props.get('Name')}")
+                    created_total += 1
                 else:
                     page_id = notion.create_story_page(story, blocks)
                     print(f"[sync-mod] created module={mod_name} page {page_id}")
+                    created_total += 1
             else:
                 if dry_run:
-                    print(f"[sync-mod] would upsert module={mod_name} TAPD_ID={tapd_id} title={props.get('Name')}")
+                    existing_page = notion.find_page_by_tapd_id(tapd_id) or notion.find_page_by_title(story.get('name') or story.get('title') or '')
+                    if existing_page:
+                        print(f"[sync-mod] would update module={mod_name} TAPD_ID={tapd_id} title={props.get('Name')}")
+                        existing_total += 1
+                    elif owner_matches_creation(story) and iteration_matches_creation(story):
+                        print(f"[sync-mod] would create module={mod_name} TAPD_ID={tapd_id} title={props.get('Name')}")
+                        created_total += 1
+                    else:
+                        print(f"[sync-mod] skip create module={mod_name} TAPD_ID={tapd_id} (not owned/current-iter)")
+                        skipped_total += 1
                 else:
                     existing_page = notion.find_page_by_tapd_id(tapd_id) or notion.find_page_by_title(story.get('name') or story.get('title') or '')
                     if existing_page:
-                        blocks = build_page_blocks_from_story(story)
+                        blocks = build_page_blocks_from_story(story, cfg=cfg)
                         page_id = notion.upsert_story_page(story, blocks)
                         print(f"[sync-mod] upserted module={mod_name} page {page_id}")
+                        existing_total += 1
                     else:
                         if owner_matches_creation(story) and iteration_matches_creation(story):
                             page_id = notion.create_story_page(story, blocks)
                             print(f"[sync-mod] created module={mod_name} page {page_id}")
+                            created_total += 1
                         else:
                             print(f"[sync-mod] skip create module={mod_name} TAPD_ID={tapd_id} (not owned/current-iter)")
+                            skipped_total += 1
         print(f"[sync-mod] done module={mod_name} items={count}")
 
-    print(f"[sync-mod] done | total_items={total}")
+    duration = time.perf_counter() - start_ts
+    print(
+        f"[sync-mod] done | total_items={total} | created={created_total} | "
+        f"existing={existing_total} | skipped={skipped_total} | duration={duration:.2f}s"
+    )
+    return SyncResult(
+        total=total,
+        created=created_total,
+        existing=existing_total,
+        skipped=skipped_total,
+        duration=duration,
+        dry_run=dry_run,
+    )

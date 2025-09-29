@@ -19,6 +19,7 @@ if SRC not in sys.path:
 
 from config import load_config  # type: ignore
 from sync import run_update, run_update_all, run_update_from_notion  # type: ignore
+from notifications import format_update_markdown, send_wecom_markdown  # type: ignore
 
 
 def parse_args() -> argparse.Namespace:
@@ -81,13 +82,21 @@ def main() -> None:
         run_update_from_notion(cfg, dry_run=(not args.execute), limit=args.limit)
         return
 
-    run_update_all(
+    result = run_update_all(
         cfg,
         dry_run=(not args.execute),
         owner=owner,
         creator=args.creator,
         current_iteration=bool(current_iter),
     )
+    if args.execute:
+        content = format_update_markdown(
+            result,
+            owner=owner,
+            creator=args.creator,
+            current_iteration=bool(current_iter),
+        )
+        send_wecom_markdown(cfg.wecom_webhook_url, content)
 
 
 if __name__ == "__main__":

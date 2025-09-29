@@ -11,6 +11,7 @@ venv/
 # data & logs
 data/state.json
 data/cache/
+data/testflow/
 logs/
 
 # OS

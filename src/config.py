@@ -11,6 +11,26 @@ except Exception:
     pass
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 @dataclass
 class Config:
     # OpenAPI (AppKey/Secret) - optional, not needed for Basic Auth
@@ -64,6 +84,36 @@ class Config:
     creation_owner_substr: Optional[str] = os.getenv("CREATION_OWNER_SUBSTR")
     creation_require_current_iteration: bool = os.getenv("CREATION_REQUIRE_CURRENT_ITERATION", "1").strip().lower() in {"1", "true", "yes", "on"}
 
+    # Notifications
+    wecom_webhook_url: Optional[str] = os.getenv("WECOM_WEBHOOK_URL")
+
+    # TestFlow / LLM integration
+    testflow_output_dir: str = os.getenv("TESTFLOW_OUTPUT_DIR", "data/testflow")
+    testflow_testers_path: str = os.getenv("TESTFLOW_TESTERS_PATH", "config/testers.json")
+    testflow_prompt_path: Optional[str] = os.getenv("TESTFLOW_PROMPT_PATH")
+    testflow_use_llm: bool = os.getenv("TESTFLOW_USE_LLM", "0").strip().lower() in {"1", "true", "yes", "on"}
+    ollama_host: str = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
+    ollama_model: str = os.getenv("OLLAMA_MODEL", "gpt-oss:20b")
+    ollama_timeout: float = _env_float("OLLAMA_TIMEOUT", 60.0)
+    ollama_max_retries: int = _env_int("OLLAMA_MAX_RETRIES", 3)
+    ollama_temperature: float = _env_float("OLLAMA_TEMPERATURE", 0.1)
+    analysis_use_llm: bool = os.getenv("ANALYSIS_USE_LLM", "0").strip().lower() in {"1", "true", "yes", "on"}
+    analysis_llm_model: Optional[str] = os.getenv("ANALYSIS_LLM_MODEL")
+    analysis_llm_prompt_path: Optional[str] = os.getenv("ANALYSIS_LLM_PROMPT_PATH")
+
+    # Mail channel for TestFlow distribution
+    smtp_host: Optional[str] = os.getenv("SMTP_HOST")
+    smtp_port: int = _env_int("SMTP_PORT", 465)
+    smtp_user: Optional[str] = os.getenv("SMTP_USER")
+    smtp_password: Optional[str] = os.getenv("SMTP_PASSWORD")
+    smtp_use_tls: bool = os.getenv("SMTP_USE_TLS", "1").strip().lower() in {"1", "true", "yes", "on"}
+    smtp_use_ssl: bool = os.getenv("SMTP_USE_SSL", "0").strip().lower() in {"1", "true", "yes", "on"}
+    mail_sender: Optional[str] = os.getenv("MAIL_SENDER")
+    mail_dry_run: bool = os.getenv("TESTFLOW_MAIL_DRY_RUN", "1").strip().lower() in {"1", "true", "yes", "on"}
+
+    # Assets
+    image_cache_dir: str = os.getenv("IMAGE_CACHE_DIR", "data/images")
+
 
 REQUIRED_KEYS = [
     # For Notion writes; TAPD auth can be either Basic or AppKey/Secret
@@ -108,6 +158,27 @@ def load_config() -> Config:
         tapd_fetch_attachments=_flag("TAPD_FETCH_ATTACHMENTS", "1"),
         tapd_fetch_comments=_flag("TAPD_FETCH_COMMENTS", "1"),
         tapd_track_existing_ids=_flag("TAPD_TRACK_EXISTING_IDS", "1"),
+        wecom_webhook_url=os.getenv("WECOM_WEBHOOK_URL"),
+        testflow_output_dir=os.getenv("TESTFLOW_OUTPUT_DIR", "data/testflow"),
+        testflow_testers_path=os.getenv("TESTFLOW_TESTERS_PATH", "config/testers.json"),
+        testflow_prompt_path=os.getenv("TESTFLOW_PROMPT_PATH"),
+        testflow_use_llm=_flag("TESTFLOW_USE_LLM", "0"),
+        ollama_host=os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434"),
+        ollama_model=os.getenv("OLLAMA_MODEL", "gpt-oss:20b"),
+        ollama_timeout=_env_float("OLLAMA_TIMEOUT", 60.0),
+        ollama_max_retries=_env_int("OLLAMA_MAX_RETRIES", 3),
+        ollama_temperature=_env_float("OLLAMA_TEMPERATURE", 0.1),
+        analysis_use_llm=_flag("ANALYSIS_USE_LLM", "0"),
+        analysis_llm_model=os.getenv("ANALYSIS_LLM_MODEL"),
+        analysis_llm_prompt_path=os.getenv("ANALYSIS_LLM_PROMPT_PATH"),
+        smtp_host=os.getenv("SMTP_HOST"),
+        smtp_port=_env_int("SMTP_PORT", 465),
+        smtp_user=os.getenv("SMTP_USER"),
+        smtp_password=os.getenv("SMTP_PASSWORD"),
+        smtp_use_tls=_flag("SMTP_USE_TLS", "1"),
+        smtp_use_ssl=_flag("SMTP_USE_SSL", "0"),
+        mail_sender=os.getenv("MAIL_SENDER"),
+        mail_dry_run=_flag("TESTFLOW_MAIL_DRY_RUN", "1"),
     )
     return cfg
 

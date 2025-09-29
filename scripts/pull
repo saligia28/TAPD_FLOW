@@ -19,6 +19,11 @@ if SRC not in sys.path:
 
 from config import load_config  # type: ignore
 from sync import run_sync, run_update_all, run_sync_by_modules  # type: ignore
+from notifications import (  # type: ignore
+    format_sync_markdown,
+    format_update_markdown,
+    send_wecom_markdown,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -47,11 +52,13 @@ def main() -> None:
     owner = args.owner or os.getenv("DEFAULT_OWNER", "江林")
     current_iter = args.current_iteration or True  # default on
 
+    since_value = None if args.full else str(args.since or "last")
+
     if args.by_modules:
-        run_sync_by_modules(
+        sync_result = run_sync_by_modules(
             cfg,
             full=bool(args.full),
-            since=None if args.full else str(args.since or "last"),
+            since=since_value,
             dry_run=(not args.execute),
             owner=owner,
             creator=args.creator,
@@ -60,10 +67,10 @@ def main() -> None:
             current_iteration=bool(current_iter),
         )
     else:
-        run_sync(
+        sync_result = run_sync(
             cfg,
             full=bool(args.full),
-            since=None if args.full else str(args.since or "last"),
+            since=since_value,
             dry_run=(not args.execute),
             owner=owner,
             creator=args.creator,
@@ -72,15 +79,35 @@ def main() -> None:
             current_iteration=bool(current_iter),
         )
 
+    if args.execute:
+        content = format_sync_markdown(
+            sync_result,
+            owner=owner,
+            creator=args.creator,
+            current_iteration=bool(current_iter),
+            since=since_value,
+            full=bool(args.full),
+            by_modules=bool(args.by_modules),
+        )
+        send_wecom_markdown(cfg.wecom_webhook_url, content)
+
     do_follow_up = bool(args.update_after) or (args.execute and not args.no_post_update)
     if do_follow_up:
-        run_update_all(
+        update_result = run_update_all(
             cfg,
             dry_run=(not args.execute),
             owner=owner,
             creator=args.creator,
             current_iteration=bool(current_iter),
         )
+        if args.execute:
+            content_upd = format_update_markdown(
+                update_result,
+                owner=owner,
+                creator=args.creator,
+                current_iteration=bool(current_iter),
+            )
+            send_wecom_markdown(cfg.wecom_webhook_url, content_upd)
 
 
 if __name__ == "__main__":

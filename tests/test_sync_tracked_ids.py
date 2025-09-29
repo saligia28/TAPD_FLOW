@@ -73,14 +73,14 @@ def patched_state(tmp_path, monkeypatch):
     yield
 
 
-def test_run_sync_refreshes_tracked_story(patched_state, monkeypatch):
+def test_run_sync_refreshes_tracked_story(patched_state, monkeypatch, tmp_path):
     dummy_tapd = DummyTapd()
     dummy_notion = DummyNotion()
 
     monkeypatch.setattr(sync, "TAPDClient", lambda *args, **kwargs: dummy_tapd)
     monkeypatch.setattr(sync, "NotionWrapper", lambda *args, **kwargs: dummy_notion)
     monkeypatch.setattr(sync, "map_story_to_notion_properties", lambda story: {"Name": story.get("name", "")})
-    monkeypatch.setattr(sync, "build_page_blocks_from_story", lambda story: [])
+    monkeypatch.setattr(sync, "build_page_blocks_from_story", lambda story, **_: [])
     monkeypatch.setattr(sync, "analyze", lambda text: {})
 
     cfg = Config()
@@ -90,6 +90,7 @@ def test_run_sync_refreshes_tracked_story(patched_state, monkeypatch):
     cfg.tapd_fetch_attachments = False
     cfg.tapd_fetch_comments = False
     cfg.tapd_track_existing_ids = True
+    cfg.testflow_output_dir = str(tmp_path / "xmind")
 
     sync.run_sync(cfg, dry_run=False, owner="江林")
 

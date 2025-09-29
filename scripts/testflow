@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""Convenience wrapper for generating TAPD-based test cases."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from typing import Optional
+
+
+REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+SRC = os.path.join(REPO, "src")
+if SRC not in sys.path:
+    sys.path.insert(0, SRC)
+
+from config import load_config  # type: ignore
+from testflow import TestFlowOptions, run_testflow  # type: ignore
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="testflow",
+        description="Generate test cases for TAPD stories and optionally export attachments.",
+    )
+
+    parser.add_argument(
+        "-o",
+        "--owner",
+        default=os.getenv("DEFAULT_OWNER"),
+        help="Filter stories by owner (comma-separated tokens).",
+    )
+    parser.add_argument(
+        "-c",
+        "--creator",
+        default=None,
+        help="Filter stories by creator (display name).",
+    )
+    parser.add_argument(
+        "-l",
+        "--limit",
+        type=int,
+        default=None,
+        help="Limit how many stories to analyse (default unlimited).",
+    )
+    parser.add_argument(
+        "-i",
+        "--current-iteration",
+        action="store_true",
+        help="Restrict to the current TAPD iteration if available.",
+    )
+    parser.add_argument(
+        "-e",
+        "--execute",
+        action="store_true",
+        help="Write attachments to disk (default dry-run). Requires --ack when enabled.",
+    )
+    parser.add_argument(
+        "-m",
+        "--send-mail",
+        action="store_true",
+        help="Send generated attachments via email (requires mail config and --ack-mail).",
+    )
+    parser.add_argument(
+        "--ack",
+        default=os.getenv("TESTFLOW_ACK"),
+        help="Acknowledgement token for execute mode.",
+    )
+    parser.add_argument(
+        "--ack-mail",
+        default=os.getenv("TESTFLOW_ACK_MAIL"),
+        help="Acknowledgement token for sending emails.",
+    )
+
+    return parser.parse_args()
+
+
+def _resolve_ack(value: Optional[str], purpose: str) -> Optional[str]:
+    if value:
+        return value
+    env_key = "TESTFLOW_DEFAULT_ACK" if purpose == "pull" else "TESTFLOW_DEFAULT_ACK_MAIL"
+    return os.getenv(env_key)
+
+
+def main() -> None:
+    args = parse_args()
+    cfg = load_config()
+
+    options = TestFlowOptions(
+        owner=args.owner,
+        creator=args.creator,
+        current_iteration=bool(args.current_iteration or True),
+        limit=args.limit,
+        execute=bool(args.execute),
+        send_mail=bool(args.send_mail),
+        ack_pull=_resolve_ack(args.ack, "pull"),
+        ack_mail=_resolve_ack(args.ack_mail, "mail"),
+    )
+
+    result = run_testflow(cfg, options)
+    print("[testflow]", result.summary())
+    if result.attachments:
+        for item in result.attachments:
+            print(f"[testflow] attachment -> {item.file_path} cases={item.case_count}")
+    if result.mails:
+        for email, message in result.mails.items():
+            print(f"[testflow] mail -> {email} status={message}")
+
+
+if __name__ == "__main__":
+    main()
+

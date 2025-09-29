@@ -5,4 +5,5 @@ tenacity
 pydantic
 python-dotenv
 beautifulsoup4
-
+fastapi
+"uvicorn[standard]"
