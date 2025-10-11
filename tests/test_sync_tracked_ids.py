@@ -16,8 +16,10 @@ from state import store  # type: ignore
 class DummyTapd:
     def __init__(self) -> None:
         self.get_story_calls: list[str] = []
+        self.list_calls = 0
 
     def list_stories(self, updated_since=None, filters=None):  # noqa: ANN001
+        self.list_calls += 1
         story = {"id": "456", "owner": "江林", "description": "", "name": "Story 456"}
         return iter([story])
 
@@ -98,3 +100,49 @@ def test_run_sync_refreshes_tracked_story(patched_state, monkeypatch, tmp_path):
     assert set(dummy_notion.upserts) == {"123", "456"}
     assert not dummy_notion.created
     assert store.get_tracked_story_ids() == {"123", "456"}
+
+
+def test_run_sync_with_explicit_story_ids(patched_state, monkeypatch, tmp_path):
+    class TapdWithIds(DummyTapd):
+        def list_stories(self, updated_since=None, filters=None):  # noqa: ANN001
+            self.list_calls += 1
+            return iter([])
+
+        def get_story(self, sid: str):
+            self.get_story_calls.append(sid)
+            return {
+                "Story": {
+                    "id": sid,
+                    "owner": "李四",
+                    "description": "",
+                    "name": f"Story {sid}",
+                }
+            }
+
+    dummy_tapd = TapdWithIds()
+    dummy_notion = DummyNotion()
+
+    monkeypatch.setattr(sync, "TAPDClient", lambda *args, **kwargs: dummy_tapd)
+    monkeypatch.setattr(sync, "NotionWrapper", lambda *args, **kwargs: dummy_notion)
+    monkeypatch.setattr(sync, "map_story_to_notion_properties", lambda story: {"Name": story.get("name", "")})
+    monkeypatch.setattr(sync, "build_page_blocks_from_story", lambda story, **_: [])
+    monkeypatch.setattr(sync, "analyze", lambda text: {})
+
+    store.save_state({"tracked_story_ids": []})
+
+    cfg = Config()
+    cfg.notion_token = "token"
+    cfg.notion_database_id = "db"
+    cfg.tapd_fetch_tags = False
+    cfg.tapd_fetch_attachments = False
+    cfg.tapd_fetch_comments = False
+    cfg.tapd_track_existing_ids = False
+    cfg.testflow_output_dir = str(tmp_path / "xmind")
+
+    result = sync.run_sync(cfg, dry_run=False, owner="江林", story_ids=["789"])
+
+    assert result.total == 1
+    assert dummy_tapd.list_calls == 0
+    assert dummy_tapd.get_story_calls == ["789"]
+    assert dummy_notion.upserts == []
+    assert dummy_notion.created == ["789"]

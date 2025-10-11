@@ -42,6 +42,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("-n", "--insert-only", action="store_true", help="仅新增（已存在的不更新）")
     p.add_argument("-U", "--update-after", action="store_true", help="写入成功后，按相同范围执行一次 update-all")
     p.add_argument("-P", "--no-post-update", action="store_true", help="禁止自动跟进更新（覆盖 -U 或默认行为）")
+    p.add_argument(
+        "--story-ids",
+        default=None,
+        help="按 TAPD 需求 ID 列表拉取，逗号分隔；提供该参数时忽略负责人筛选",
+    )
     return p.parse_args()
 
 
@@ -53,6 +58,13 @@ def main() -> None:
     current_iter = args.current_iteration or True  # default on
 
     since_value = None if args.full else str(args.since or "last")
+    story_ids: list[str] = []
+    if args.story_ids:
+        story_ids = [s.strip() for s in str(args.story_ids).split(",") if s.strip()]
+    if story_ids and args.by_modules:
+        print("[pull] --story-ids 与 --by-modules 不兼容；请取消模块拉取或移除指定 ID")
+        return
+    owner_filter = owner if not story_ids else None
 
     if args.by_modules:
         sync_result = run_sync_by_modules(
@@ -60,7 +72,7 @@ def main() -> None:
             full=bool(args.full),
             since=since_value,
             dry_run=(not args.execute),
-            owner=owner,
+            owner=owner_filter,
             creator=args.creator,
             wipe_first=bool(args.wipe_first),
             insert_only=bool(args.insert_only),
@@ -72,17 +84,18 @@ def main() -> None:
             full=bool(args.full),
             since=since_value,
             dry_run=(not args.execute),
-            owner=owner,
+            owner=owner_filter,
             creator=args.creator,
             wipe_first=bool(args.wipe_first),
             insert_only=bool(args.insert_only),
             current_iteration=bool(current_iter),
+            story_ids=story_ids,
         )
 
     if args.execute:
         content = format_sync_markdown(
             sync_result,
-            owner=owner,
+            owner=owner_filter,
             creator=args.creator,
             current_iteration=bool(current_iter),
             since=since_value,

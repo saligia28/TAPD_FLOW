@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 import time
-from typing import Any, Dict, Optional, Iterable, List, Set
+from typing import Any, Dict, Optional, Iterable, List, Sequence, Set
 
 # Use absolute imports so running `python3 src/cli.py` works without package context
 from config import Config
@@ -265,10 +265,17 @@ def run_sync(
     wipe_first: bool = False,
     insert_only: bool = False,
     current_iteration: bool = False,
+    story_ids: Optional[Sequence[str]] = None,
 ) -> SyncResult:
     start_ts = time.perf_counter()
     last = None if full else (since or store.get_last_sync_at())
-    print(f"[sync] start | full={full} | since={last} | wipe_first={wipe_first} | insert_only={insert_only}")
+    focus_ids = [str(s).strip() for s in (story_ids or []) if str(s).strip()]
+    restrict_to_ids = bool(focus_ids)
+    focus_count = len(focus_ids) if restrict_to_ids else 0
+    print(
+        f"[sync] start | full={full} | since={last} | wipe_first={wipe_first} | "
+        f"insert_only={insert_only} | story_ids={focus_count}"
+    )
 
     tapd = TAPDClient(
         cfg.tapd_api_key or "",
@@ -291,7 +298,7 @@ def run_sync(
     tracked_ids: Set[str] = set()
     existing_idx: Dict[str, str] = {}
     existing_idx_loaded = False
-    if tracked_enabled:
+    if tracked_enabled and not restrict_to_ids:
         try:
             tracked_ids = store.get_tracked_story_ids()
         except Exception as exc:
@@ -310,10 +317,10 @@ def run_sync(
 
     # Build filters: CLI overrides > config
     filters: Dict[str, object] = {}
-    only_owner = owner or cfg.tapd_only_owner
+    only_owner = None if restrict_to_ids else (owner or cfg.tapd_only_owner)
     only_creator = creator or cfg.tapd_only_creator
     # NOTE: owner is filtered locally via substring matching, avoid narrowing server results
-    if only_creator:
+    if only_creator and not restrict_to_ids:
         filters["creator"] = only_creator
     # Current iteration filter
     cur_iter = None
@@ -353,7 +360,7 @@ def run_sync(
                         continue
                 # fall back to first candidate if none detected
                 (detected_iter_key := detected_iter_key or (candidates[0] if candidates else None))
-                if detected_iter_key:
+                if detected_iter_key and not restrict_to_ids:
                     filters[detected_iter_key] = it_id
 
     owner_subs: list[str] = []
@@ -361,9 +368,13 @@ def run_sync(
         owner_subs = [s.strip() for s in str(only_owner).split(',') if s.strip()]
 
     def owner_matches(story: dict) -> bool:
+        if restrict_to_ids:
+            return True
         return _story_matches_owner(story, owner_subs)
 
     def iteration_matches(story: dict) -> bool:
+        if restrict_to_ids:
+            return True
         if not cur_iter:
             return True
         # server-side filter may already apply; keep local guard
@@ -404,7 +415,31 @@ def run_sync(
     notion_candidates: List[dict] = []
     notion_seen: Set[str] = set()
     fetched_ids: Set[str] = set()
-    for story in tapd.list_stories(updated_since=last, filters=filters or None):
+    def iterate_source_stories() -> Iterable[dict]:
+        if restrict_to_ids:
+            seen_targets: Set[str] = set()
+            for sid in focus_ids:
+                if not sid or sid in seen_targets:
+                    continue
+                seen_targets.add(sid)
+                try:
+                    res = tapd.get_story(sid)
+                except Exception as exc:
+                    print(f"[sync] fetch by id failed id={sid}: {exc}")
+                    continue
+                story = _unwrap_story_payload(res)
+                if not isinstance(story, dict):
+                    print(f"[sync] unexpected payload when fetching id={sid}")
+                    continue
+                story.setdefault("id", sid)
+                yield story
+        else:
+            for raw in tapd.list_stories(updated_since=last, filters=filters or None):
+                story = _unwrap_story_payload(raw) or raw
+                if isinstance(story, dict):
+                    yield story
+
+    for story in iterate_source_stories():
         sid = _story_tapd_id(story)
         matches_iteration = iteration_matches(story)
         if matches_iteration:
@@ -422,7 +457,7 @@ def run_sync(
             if sid:
                 notion_seen.add(sid)
 
-    if tracked_enabled:
+    if tracked_enabled and not restrict_to_ids:
         missing_tracked = [sid for sid in tracked_ids if sid and sid not in fetched_ids]
         if missing_tracked:
             print(f"[sync] refreshing tracked stories count={len(missing_tracked)}")
@@ -463,9 +498,9 @@ def run_sync(
     # Creation guard configuration (enforced only when creating new pages)
     creation_owner = cfg.creation_owner_substr or only_owner
     creation_owner_subs: list[str] = []
-    if creation_owner:
+    if creation_owner and not restrict_to_ids:
         creation_owner_subs = [s.strip() for s in str(creation_owner).split(',') if s.strip()]
-    require_cur_iter_for_create = getattr(cfg, 'creation_require_current_iteration', True)
+    require_cur_iter_for_create = False if restrict_to_ids else getattr(cfg, 'creation_require_current_iteration', True)
     # ensure cur_iter if required for create
     if require_cur_iter_for_create and not cur_iter:
         try:
