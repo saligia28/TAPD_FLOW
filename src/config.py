@@ -59,6 +59,7 @@ class Config:
     tapd_story_tags_path: str = os.getenv("TAPD_STORY_TAGS_PATH", "/story_tags")
     tapd_story_attachments_path: str = os.getenv("TAPD_STORY_ATTACHMENTS_PATH", "/story_attachments")
     tapd_story_comments_path: str = os.getenv("TAPD_STORY_COMMENTS_PATH", "/story_comments")
+    tapd_story_page_size: int = 200
     tapd_fetch_tags: bool = os.getenv("TAPD_FETCH_TAGS", "1").strip().lower() in {"1", "true", "yes", "on"}
     tapd_fetch_attachments: bool = os.getenv("TAPD_FETCH_ATTACHMENTS", "1").strip().lower() in {"1", "true", "yes", "on"}
     tapd_fetch_comments: bool = os.getenv("TAPD_FETCH_COMMENTS", "1").strip().lower() in {"1", "true", "yes", "on"}
@@ -79,6 +80,11 @@ class Config:
     tapd_filter_module_name_keys: List[str] = field(default_factory=list)
     tapd_filter_iteration_id_keys: List[str] = field(default_factory=list)
     module_path_sep: str = os.getenv("MODULE_PATH_SEP", "/")
+    story_fetch_limit: int = 0
+    story_owner_quick_tokens: List[str] = field(default_factory=list)
+    tapd_story_cache_ttl_seconds: int = 0
+    tapd_story_cache_max_entries: int = 0
+    tapd_iteration_cache_ttl_seconds: int = 0
 
     # Creation guards: restrict creating new Notion pages to owned-by substring and current iteration
     creation_owner_substr: Optional[str] = os.getenv("CREATION_OWNER_SUBSTR")
@@ -154,10 +160,16 @@ def load_config() -> Config:
         tapd_story_tags_path=os.getenv("TAPD_STORY_TAGS_PATH", "/story_tags"),
         tapd_story_attachments_path=os.getenv("TAPD_STORY_ATTACHMENTS_PATH", "/story_attachments"),
         tapd_story_comments_path=os.getenv("TAPD_STORY_COMMENTS_PATH", "/story_comments"),
+        tapd_story_page_size=_env_int("TAPD_STORY_PAGE_SIZE", 200),
         tapd_fetch_tags=_flag("TAPD_FETCH_TAGS", "1"),
         tapd_fetch_attachments=_flag("TAPD_FETCH_ATTACHMENTS", "1"),
         tapd_fetch_comments=_flag("TAPD_FETCH_COMMENTS", "1"),
         tapd_track_existing_ids=_flag("TAPD_TRACK_EXISTING_IDS", "1"),
+        story_fetch_limit=_env_int("STORY_FETCH_LIMIT", 0),
+        story_owner_quick_tokens=_csv("STORY_OWNER_QUICK_TOKENS", "江林,喻童,王荣祥"),
+        tapd_story_cache_ttl_seconds=_env_int("TAPD_STORY_CACHE_TTL", 120),
+        tapd_story_cache_max_entries=_env_int("TAPD_STORY_CACHE_MAX", 4),
+        tapd_iteration_cache_ttl_seconds=_env_int("TAPD_ITERATION_CACHE_TTL", 60),
         wecom_webhook_url=os.getenv("WECOM_WEBHOOK_URL"),
         testflow_output_dir=os.getenv("TESTFLOW_OUTPUT_DIR", "data/testflow"),
         testflow_testers_path=os.getenv("TESTFLOW_TESTERS_PATH", "config/testers.json"),
@@ -180,6 +192,13 @@ def load_config() -> Config:
         mail_sender=os.getenv("MAIL_SENDER"),
         mail_dry_run=_flag("TESTFLOW_MAIL_DRY_RUN", "1"),
     )
+
+    # Auto-enable TestFlow LLM when LLM configuration is present but the flag was omitted.
+    if os.getenv("TESTFLOW_USE_LLM") is None:
+        has_llm_env = any(os.getenv(key) for key in ("OLLAMA_HOST", "OLLAMA_MODEL"))
+        if cfg.analysis_use_llm or has_llm_env:
+            cfg.testflow_use_llm = True
+
     return cfg
 
 

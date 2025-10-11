@@ -28,6 +28,7 @@ def generate_test_cases(
     prompt = build_prompt(story, tester_list, cfg, registry)
     raw_response = call_ollama(prompt, cfg)
     cases, test_points = parse_response(raw_response, story, registry, tester_list)
+    fallback_reason = "LLM 输出为空或格式不正确"
     if test_points:
         overview = TestCase(
             story_id=str(story.get("id") or story.get("story_id") or ""),
@@ -39,7 +40,7 @@ def generate_test_cases(
         )
         cases = [overview, *cases]
     if not cases:
-        cases = build_fallback_cases(story, tester_list, registry)
+        cases = build_fallback_cases(story, tester_list, registry, reason=fallback_reason)
     return cases, raw_response
 
 
@@ -155,6 +156,7 @@ def build_fallback_cases(
     story: dict,
     tester_names: Iterable[str],
     registry: TesterRegistry,
+    reason: str = "LLM 生成失败",
 ) -> List[TestCase]:
     fallback: List[TestCase] = []
     testers = list(tester_names) or [registry.default().name]
@@ -165,13 +167,13 @@ def build_fallback_cases(
                 story_title=str(story.get("name") or story.get("title") or "未命名需求"),
                 tester=tester,
                 title=f"[草稿] {story.get('name') or story.get('title') or '未命名需求'}",
-                summary="LLM 生成失败，待测试人员补充",
+                summary=f"{reason}，待测试人员补充",
                 preconditions=[],
                 steps=["1. 阅读需求描述", "2. 根据业务逻辑拆分测试场景", "3. 补充详细步骤与断言"],
                 expected_results=["测试人员根据经验补充"],
                 priority=None,
                 risk=None,
-                extra={"source": "fallback"},
+                extra={"source": "fallback", "fallback_reason": reason},
             )
         )
     return fallback

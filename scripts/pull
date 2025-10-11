@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-# Simplified wrapper for common TAPD→Notion flows.
-# Usage examples:
-#   python3 scripts/pull            # dry-run sync since last for default scope
-#   python3 scripts/pull -e -f      # execute full sync
-#   python3 scripts/pull -o 江林 -i -e  # execute sync for owner 江林, current iteration
+# TAPD→Notion 集成脚本：拆分管线、异步通知与失败重试。
 
 from __future__ import annotations
+
 import argparse
 import os
 import sys
-from typing import Optional
+from functools import partial
+from typing import List
 
 # Ensure src/ is importable when running from scripts/
 REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -17,19 +15,25 @@ SRC = os.path.join(REPO, "src")
 if SRC not in sys.path:
     sys.path.insert(0, SRC)
 
+from _pipeline import (  # type: ignore
+    NotificationDispatcher,
+    StepRecord,
+    format_failure_markdown,
+    run_step,
+)
 from config import load_config  # type: ignore
-from sync import run_sync, run_update_all, run_sync_by_modules  # type: ignore
 from notifications import (  # type: ignore
     format_sync_markdown,
     format_update_markdown,
     send_wecom_markdown,
 )
+from sync import run_sync, run_sync_by_modules, run_update_all  # type: ignore
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="pull",
-        description="Quick TAPD→Notion sync wrapper (short flags).",
+        description="Quick TAPD→Notion sync wrapper (staged pipeline).",
     )
     p.add_argument("-e", "--execute", action="store_true", help="实际写入 Notion（默认 dry-run）")
     p.add_argument("-f", "--full", action="store_true", help="全量初始化（忽略 since 边界）")
@@ -55,72 +59,114 @@ def main() -> None:
     cfg = load_config()
 
     owner = args.owner or os.getenv("DEFAULT_OWNER", "江林")
-    current_iter = args.current_iteration or True  # default on
+    current_iter = args.current_iteration or True  # 默认开启当前迭代
 
     since_value = None if args.full else str(args.since or "last")
-    story_ids: list[str] = []
+    story_ids: List[str] = []
     if args.story_ids:
         story_ids = [s.strip() for s in str(args.story_ids).split(",") if s.strip()]
     if story_ids and args.by_modules:
         print("[pull] --story-ids 与 --by-modules 不兼容；请取消模块拉取或移除指定 ID")
-        return
+        sys.exit(2)
     owner_filter = owner if not story_ids else None
 
-    if args.by_modules:
-        sync_result = run_sync_by_modules(
-            cfg,
-            full=bool(args.full),
-            since=since_value,
-            dry_run=(not args.execute),
-            owner=owner_filter,
-            creator=args.creator,
-            wipe_first=bool(args.wipe_first),
-            insert_only=bool(args.insert_only),
-            current_iteration=bool(current_iter),
-        )
-    else:
-        sync_result = run_sync(
-            cfg,
-            full=bool(args.full),
-            since=since_value,
-            dry_run=(not args.execute),
-            owner=owner_filter,
-            creator=args.creator,
-            wipe_first=bool(args.wipe_first),
-            insert_only=bool(args.insert_only),
-            current_iteration=bool(current_iter),
-            story_ids=story_ids,
+    sender = partial(send_wecom_markdown, cfg.wecom_webhook_url) if cfg.wecom_webhook_url else None
+    dispatcher = NotificationDispatcher(sender)
+    records: List[StepRecord] = []
+    exit_code = 0
+
+    try:
+        if args.by_modules:
+            sync_callable = lambda: run_sync_by_modules(  # noqa: E731
+                cfg,
+                full=bool(args.full),
+                since=since_value,
+                dry_run=(not args.execute),
+                owner=owner_filter,
+                creator=args.creator,
+                wipe_first=bool(args.wipe_first),
+                insert_only=bool(args.insert_only),
+                current_iteration=bool(current_iter),
+            )
+            sync_label = "sync-by-modules"
+        else:
+            sync_callable = lambda: run_sync(  # noqa: E731
+                cfg,
+                full=bool(args.full),
+                since=since_value,
+                dry_run=(not args.execute),
+                owner=owner_filter,
+                creator=args.creator,
+                wipe_first=bool(args.wipe_first),
+                insert_only=bool(args.insert_only),
+                current_iteration=bool(current_iter),
+                story_ids=story_ids,
+            )
+            sync_label = "sync"
+
+        sync_result, sync_record = run_step(sync_label, sync_callable)
+        records.append(sync_record)
+        if sync_record.success and args.execute:
+            dispatcher.enqueue(
+                format_sync_markdown(
+                    sync_result,  # type: ignore[arg-type]
+                    owner=owner_filter,
+                    creator=args.creator,
+                    current_iteration=bool(current_iter),
+                    since=since_value,
+                    full=bool(args.full),
+                    by_modules=bool(args.by_modules),
+                )
+            )
+        elif not sync_record.success:
+            exit_code = 1
+            if args.execute:
+                dispatcher.enqueue(format_failure_markdown(sync_record.name, sync_record.message))
+
+        do_follow_up = (
+            sync_record.success
+            and (bool(args.update_after) or (args.execute and not args.no_post_update))
         )
 
-    if args.execute:
-        content = format_sync_markdown(
-            sync_result,
-            owner=owner_filter,
-            creator=args.creator,
-            current_iteration=bool(current_iter),
-            since=since_value,
-            full=bool(args.full),
-            by_modules=bool(args.by_modules),
-        )
-        send_wecom_markdown(cfg.wecom_webhook_url, content)
-
-    do_follow_up = bool(args.update_after) or (args.execute and not args.no_post_update)
-    if do_follow_up:
-        update_result = run_update_all(
-            cfg,
-            dry_run=(not args.execute),
-            owner=owner,
-            creator=args.creator,
-            current_iteration=bool(current_iter),
-        )
-        if args.execute:
-            content_upd = format_update_markdown(
-                update_result,
+        if do_follow_up:
+            update_callable = lambda: run_update_all(  # noqa: E731
+                cfg,
+                dry_run=(not args.execute),
                 owner=owner,
                 creator=args.creator,
                 current_iteration=bool(current_iter),
             )
-            send_wecom_markdown(cfg.wecom_webhook_url, content_upd)
+            update_result, upd_record = run_step("update-all", update_callable)
+            records.append(upd_record)
+            if upd_record.success and args.execute:
+                dispatcher.enqueue(
+                    format_update_markdown(
+                        update_result,  # type: ignore[arg-type]
+                        owner=owner,
+                        creator=args.creator,
+                        current_iteration=bool(current_iter),
+                    )
+                )
+            elif not upd_record.success:
+                exit_code = 1
+                if args.execute:
+                    dispatcher.enqueue(format_failure_markdown(upd_record.name, upd_record.message))
+
+    except KeyboardInterrupt:
+        print("[pull] 用户中断，正在清理…")
+        exit_code = 130
+    finally:
+        dispatcher.close()
+        print("[pull] === 执行摘要 ===")
+        if records:
+            for rec in records:
+                status = "OK" if rec.success else "FAIL"
+                detail = f" :: {rec.message}" if rec.message else ""
+                print(f"[pull] {rec.name:<14} {status:<5} {rec.duration:>6.2f}s{detail}")
+        else:
+            print("[pull] 尚未执行任何步骤。")
+
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

@@ -1,31 +1,29 @@
 #!/usr/bin/env python3
-# Simplified update wrapper.
-# Examples:
-#   python3 scripts/update            # update-all (dry-run) for owner=江林, 当前迭代
-#   python3 scripts/update -e         # execute update-all
-#   python3 scripts/update -N -l 100  # update-from-notion, limit 100 (dry-run)
-#   python3 scripts/update -i 123,456 -e -C   # update these IDs, create if missing
+# Notion 更新脚本：分阶段执行并支持异步通知/失败重试。
 
 from __future__ import annotations
+
 import argparse
 import os
 import sys
-from typing import List
+from functools import partial
+from typing import List, Optional
 
 REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 SRC = os.path.join(REPO, "src")
 if SRC not in sys.path:
     sys.path.insert(0, SRC)
 
+from _pipeline import NotificationDispatcher, StepRecord, format_failure_markdown, run_step  # type: ignore
 from config import load_config  # type: ignore
-from sync import run_update, run_update_all, run_update_from_notion  # type: ignore
 from notifications import format_update_markdown, send_wecom_markdown  # type: ignore
+from sync import run_update, run_update_all, run_update_from_notion  # type: ignore
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="update",
-        description="Quick Notion update wrapper (short flags).",
+        description="Quick Notion update wrapper (staged pipeline).",
     )
     p.add_argument("-e", "--execute", action="store_true", help="实际写入 Notion（默认 dry-run）")
     p.add_argument("-A", "--all", action="store_true", help="更新全部（仅更新已存在页面），默认模式")
@@ -43,6 +41,28 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def collect_story_ids(args: argparse.Namespace) -> List[str]:
+    ids: List[str] = []
+    if args.ids:
+        ids.extend([s.strip() for s in str(args.ids).split(",") if s.strip()])
+    if args.id:
+        ids.extend([str(x).strip() for x in args.id if str(x).strip()])
+    if args.file:
+        try:
+            with open(args.file, "r", encoding="utf-8") as f:
+                for line in f:
+                    s = line.strip()
+                    if s:
+                        ids.append(s)
+        except Exception as exc:
+            print(f"[update] 读取文件失败: {exc}")
+    dedup: List[str] = []
+    for sid in ids:
+        if sid and sid not in dedup:
+            dedup.append(sid)
+    return dedup
+
+
 def main() -> None:
     args = parse_args()
     cfg = load_config()
@@ -51,52 +71,91 @@ def main() -> None:
     mode = "ids" if has_id_inputs else ("from-notion" if args.from_notion else "all")
 
     owner = args.owner or os.getenv("DEFAULT_OWNER", "江林")
-    current_iter = args.current_iteration or True  # default on
+    current_iter = args.current_iteration or True  # 默认开启当前迭代
 
-    if mode == "ids":
-        ids: List[str] = []
-        if args.ids:
-            ids.extend([s.strip() for s in str(args.ids).split(',') if s.strip()])
-        if args.id:
-            ids.extend([str(x).strip() for x in args.id if str(x).strip()])
-        if args.file:
-            try:
-                with open(args.file, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        s = line.strip()
-                        if s:
-                            ids.append(s)
-            except Exception as e:
-                print(f"[update] 读取文件失败: {e}")
-        dedup: List[str] = []
-        for x in ids:
-            if x and x not in dedup:
-                dedup.append(x)
-        if not dedup:
-            print("[update] 未提供任何需求 ID；请使用 -i/-I/-f")
-            return
-        run_update(cfg, dedup, dry_run=(not args.execute), create_missing=bool(args.create_missing))
-        return
+    sender = None
+    if args.execute and cfg.wecom_webhook_url:
+        sender = partial(send_wecom_markdown, cfg.wecom_webhook_url)
+    dispatcher = NotificationDispatcher(sender)
+    records: List[StepRecord] = []
+    exit_code = 0
 
-    if mode == "from-notion":
-        run_update_from_notion(cfg, dry_run=(not args.execute), limit=args.limit)
-        return
+    try:
+        if mode == "ids":
+            ids = collect_story_ids(args)
+            if not ids:
+                print("[update] 未提供任何需求 ID；请使用 -i/-I/-f")
+                exit_code = 2
+            else:
+                _, record = run_step(
+                    "update-by-ids",
+                    lambda: run_update(  # noqa: E731
+                        cfg,
+                        ids,
+                        dry_run=(not args.execute),
+                        create_missing=bool(args.create_missing),
+                    ),
+                )
+                records.append(record)
+                if not record.success:
+                    exit_code = 1
+                    if args.execute:
+                        dispatcher.enqueue(format_failure_markdown(record.name, record.message))
+        elif mode == "from-notion":
+            _, record = run_step(
+                "update-from-notion",
+                lambda: run_update_from_notion(  # noqa: E731
+                    cfg,
+                    dry_run=(not args.execute),
+                    limit=args.limit,
+                ),
+            )
+            records.append(record)
+            if not record.success:
+                exit_code = 1
+                if args.execute:
+                    dispatcher.enqueue(format_failure_markdown(record.name, record.message))
+        else:
+            update_result, record = run_step(
+                "update-all",
+                lambda: run_update_all(  # noqa: E731
+                    cfg,
+                    dry_run=(not args.execute),
+                    owner=owner,
+                    creator=args.creator,
+                    current_iteration=bool(current_iter),
+                ),
+            )
+            records.append(record)
+            if record.success:
+                if args.execute:
+                    dispatcher.enqueue(
+                        format_update_markdown(
+                            update_result,  # type: ignore[arg-type]
+                            owner=owner,
+                            creator=args.creator,
+                            current_iteration=bool(current_iter),
+                        )
+                    )
+            else:
+                exit_code = 1
+                if args.execute:
+                    dispatcher.enqueue(format_failure_markdown(record.name, record.message))
+    except KeyboardInterrupt:
+        print("[update] 用户中断，正在清理…")
+        exit_code = 130
+    finally:
+        dispatcher.close()
+        print("[update] === 执行摘要 ===")
+        if records:
+            for rec in records:
+                status = "OK" if rec.success else "FAIL"
+                detail = f" :: {rec.message}" if rec.message else ""
+                print(f"[update] {rec.name:<18} {status:<5} {rec.duration:>6.2f}s{detail}")
+        else:
+            print("[update] 尚未执行任何步骤。")
 
-    result = run_update_all(
-        cfg,
-        dry_run=(not args.execute),
-        owner=owner,
-        creator=args.creator,
-        current_iteration=bool(current_iter),
-    )
-    if args.execute:
-        content = format_update_markdown(
-            result,
-            owner=owner,
-            creator=args.creator,
-            current_iteration=bool(current_iter),
-        )
-        send_wecom_markdown(cfg.wecom_webhook_url, content)
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

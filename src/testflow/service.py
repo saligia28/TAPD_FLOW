@@ -177,13 +177,18 @@ def _generate_cases(
             assigned_contacts = [registry.default()]
         tester_names = [contact.name for contact in assigned_contacts]
         cases = []
+        fallback_reason = "LLM 生成失败"
         if getattr(cfg, "testflow_use_llm", False):
             try:
                 cases, _ = generate_test_cases(story, tester_names, registry, cfg)
             except LLMGenerationError as exc:
+                fallback_reason = f"LLM 调用失败: {exc}"
                 print(f"[testflow] LLM failure for story {story.get('id')}: {exc}")
+        else:
+            fallback_reason = "未启用 LLM 生成"
+            print("[testflow] LLM generation disabled; set TESTFLOW_USE_LLM=1 to enable.")
         if not cases:
-            cases = build_fallback_cases(story, tester_names, registry)
+            cases = build_fallback_cases(story, tester_names, registry, reason=fallback_reason)
         for case in cases:
             contact = registry.lookup(case.tester) or assigned_contacts[0]
             suite = suites_by_email.setdefault(

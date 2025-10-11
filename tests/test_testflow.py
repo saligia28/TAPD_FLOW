@@ -77,6 +77,7 @@ def test_fallback_cases_cover_all_testers(tester_registry: TesterRegistry):
     assert len(cases) == 1
     assert cases[0].tester == "李四"
     assert "LLM" in (cases[0].summary or "")
+    assert cases[0].extra.get("fallback_reason") == "LLM 生成失败"
 
 
 def test_export_suite_writes_valid_xmind(tmp_path: Path):

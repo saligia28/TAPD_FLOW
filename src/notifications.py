@@ -13,31 +13,34 @@ if TYPE_CHECKING:  # pragma: no cover - import for typing only
     from sync import SyncResult, UpdateAllResult
 
 
-def send_wecom_markdown(webhook_url: Optional[str], content: str, *, timeout: float = DEFAULT_TIMEOUT) -> None:
+def send_wecom_markdown(webhook_url: Optional[str], content: str, *, timeout: float = DEFAULT_TIMEOUT) -> bool:
     """Send a markdown message to WeCom robot.
 
-    Failures are logged to stdout but do not raise, to avoid breaking the
-    primary sync/update pipeline.
+    Returns True when the message is accepted by WeCom, False otherwise.
+    Failures are logged to stdout but do not raise, allowing callers to retry
+    或继续后续步骤而不中断流水线。
     """
 
     if not webhook_url:
-        return
+        return True
     payload = {"msgtype": "markdown", "markdown": {"content": content}}
     try:
         resp = requests.post(webhook_url, json=payload, timeout=timeout)
     except Exception as exc:  # pragma: no cover - network failure branch
         print(f"[notify] send failed: {exc}")
-        return
+        return False
     if resp.status_code != 200:
         print(f"[notify] unexpected status: {resp.status_code} body={resp.text[:200]}")
-        return
+        return False
     try:
         data = resp.json()
     except (json.JSONDecodeError, ValueError):
         print("[notify] non-JSON response from WeCom webhook")
-        return
+        return False
     if data.get("errcode") != 0:
         print(f"[notify] WeCom error: {data}")
+        return False
+    return True
 
 
 def format_sync_markdown(
