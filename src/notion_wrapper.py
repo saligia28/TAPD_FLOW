@@ -778,7 +778,7 @@ class NotionWrapper:
             return {"url": tapd_id}
         return None
 
-    def find_page_by_tapd_id(self, tapd_id: str) -> Optional[str]:
+    def find_page_by_tapd_id(self, tapd_id: str, *, suppress_errors: bool = True) -> Optional[str]:
         """Return Notion page id if exists.
 
         Prefer dedicated TAPD_ID property; fallback to search in a rich_text property
@@ -838,6 +838,8 @@ class NotionWrapper:
                         f"[notion] TAPD_ID lookup failed for property {self._id_prop}"
                         f" ({prop_type}): {exc}"
                     )
+                    if not suppress_errors:
+                        raise
         # Fallback: search in description rich_text
         if self._desc_prop:
             try:
@@ -852,11 +854,12 @@ class NotionWrapper:
                 results = res.get("results", [])
                 if results:
                     return results[0]["id"]
-            except Exception:
-                pass
+            except Exception as exc:
+                if not suppress_errors:
+                    raise
         return None
 
-    def find_page_by_title(self, title: str) -> Optional[str]:
+    def find_page_by_title(self, title: str, *, suppress_errors: bool = True) -> Optional[str]:
         if not self.client or not title or not self._title_prop:
             return None
         try:
@@ -871,8 +874,9 @@ class NotionWrapper:
             results = res.get("results", [])
             if results:
                 return results[0]["id"]
-        except Exception:
-            pass
+        except Exception as exc:
+            if not suppress_errors:
+                raise
         return None
 
     def update_story_page_if_exists(self, story: Dict[str, Any], blocks: Optional[list] = None) -> Optional[str]:
@@ -1301,7 +1305,10 @@ class NotionWrapper:
         if self._status_prop and status_val:
             props[self._status_prop] = {"select": {"name": str(status_val)}}
         if self._id_prop:
-            props[self._id_prop] = {"rich_text": [{"text": {"content": str(tapd_id)}}]}
+            # Respect actual property type (rich_text/title/number/url) to avoid API errors
+            id_payload = self._build_id_prop_payload(str(tapd_id))
+            if id_payload is not None:
+                props[self._id_prop] = id_payload
         if self._desc_prop:
             desc = story.get("description") or ""
             if isinstance(desc, str) and ("<" in desc and ">" in desc):

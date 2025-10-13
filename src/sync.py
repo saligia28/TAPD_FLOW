@@ -779,7 +779,21 @@ def run_update(
         props = map_story_to_notion_properties(story)
         blocks = build_page_blocks_from_story(story, cfg=cfg)
 
-        page_id = notion.find_page_by_tapd_id(sid)
+        try:
+            page_id = notion.find_page_by_tapd_id(sid, suppress_errors=False)
+        except Exception as exc:
+            print(f"[update] lookup failed id={sid}: {exc}")
+            skipped += 1
+            continue
+        if not page_id:
+            title = story.get("name") or story.get("title")
+            if title:
+                try:
+                    page_id = notion.find_page_by_title(str(title), suppress_errors=False)
+                except Exception as exc:
+                    print(f"[update] title lookup failed id={sid}: {exc}")
+                    skipped += 1
+                    continue
         if not page_id and not create_missing:
             print(f"[update] skip id={sid} (page not found; use --create-missing to create)")
             skipped += 1
