@@ -20,6 +20,9 @@ docs/
 
 # AI
 AGENTS.md
+CLAUDE.md
+.claude/
+.codex/
 
 # self config
 .vscode/
