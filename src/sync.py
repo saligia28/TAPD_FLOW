@@ -1,5 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
+import os
 import time
 from typing import Any, Dict, Optional, Iterable, List, Sequence, Set
 
@@ -15,6 +16,8 @@ from testflow.service import generate_testflow_for_stories
 
 
 FRONTEND_KEY_TOKENS = ("前端", "frontend")
+_DEFAULT_FRONTEND_FIELD_KEYS = ("custom_field_four",)
+_FRONTEND_LABEL_SUFFIXES = ("_label", "_name", "_display", "_display_name", "_title")
 
 
 @dataclass
@@ -136,7 +139,93 @@ def _extract_labeled_frontend_values(entry: Dict[str, Any]) -> List[str]:
 
 
 def _collect_frontend_assignees(story: Dict[str, Any]) -> List[str]:
+    def _parse_csv_env(name: str, default: Sequence[str] = ()) -> List[str]:
+        raw = os.getenv(name)
+        if raw is None:
+            return list(default)
+        cleaned = raw.strip()
+        if not cleaned:
+            return list(default)
+        if cleaned.lower() in {"none", "null"}:
+            return []
+        return [segment.strip() for segment in raw.split(",") if segment.strip()]
+
+    def _frontend_config() -> tuple[List[str], List[str]]:
+        keys = _parse_csv_env("TAPD_FRONTEND_FIELD_KEYS", _DEFAULT_FRONTEND_FIELD_KEYS)
+        labels = _parse_csv_env("TAPD_FRONTEND_FIELD_LABELS", ("前端",))
+        return keys, labels
+
+    def _collect_from_mapping(mapping: Dict[str, Any], keys: Set[str], labels: Set[str]) -> List[str]:
+        collected: List[str] = []
+        if not isinstance(mapping, dict):
+            return collected
+        for key in keys:
+            if key in mapping:
+                collected.extend(_flatten_strings(mapping[key]))
+        if labels:
+            for name, label in mapping.items():
+                if not isinstance(name, str):
+                    continue
+                label_text = str(label).strip()
+                if not label_text or label_text not in labels:
+                    continue
+                base = name
+                for suffix in _FRONTEND_LABEL_SUFFIXES:
+                    if base.endswith(suffix):
+                        base = base[: -len(suffix)]
+                        break
+                for candidate in (
+                    base,
+                    f"{base}_value",
+                    f"{base}_values",
+                    f"{base}_text",
+                    f"{base}_content",
+                    f"{base}_display",
+                    f"{base}_display_value",
+                    f"{base}_assignee",
+                    f"{base}_user",
+                ):
+                    if candidate in mapping:
+                        collected.extend(_flatten_strings(mapping[candidate]))
+                        break
+        return collected
+
     values: List[str] = []
+    config_keys, config_labels = _frontend_config()
+    key_set = {key for key in config_keys if key}
+    label_set = {label for label in config_labels if label}
+    if key_set or label_set:
+        values.extend(_collect_from_mapping(story, key_set, label_set))
+        custom_fields = story.get("custom_fields")
+        if isinstance(custom_fields, dict):
+            values.extend(_collect_from_mapping(custom_fields, key_set, label_set))
+        elif isinstance(custom_fields, list):
+            for entry in custom_fields:
+                if not isinstance(entry, dict):
+                    continue
+                entry_keys = [
+                    str(entry.get(candidate)).strip()
+                    for candidate in ("field", "field_name", "field_key", "key", "name")
+                    if entry.get(candidate)
+                ]
+                if any(candidate_key in key_set for candidate_key in entry_keys):
+                    for value_key in _FRONTEND_VALUE_KEYS:
+                        if value_key in entry:
+                            values.extend(_flatten_strings(entry[value_key]))
+                            break
+                    continue
+                label_text = str(
+                    entry.get("label")
+                    or entry.get("display_name")
+                    or entry.get("field_label")
+                    or entry.get("title")
+                    or ""
+                ).strip()
+                if label_text and label_text in label_set:
+                    for value_key in _FRONTEND_VALUE_KEYS:
+                        if value_key in entry:
+                            values.extend(_flatten_strings(entry[value_key]))
+                            break
     seen: Set[int] = set()
     stack: List[Any] = [story]
     while stack:

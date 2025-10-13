@@ -24,6 +24,16 @@ def test_owner_match_via_nested_frontend_label():
     assert _story_matches_owner(story, ["江林"]) is True
 
 
+def test_owner_match_via_custom_field_key():
+    story = {"custom_field_four": "江林"}
+    assert _story_matches_owner(story, ["江林"]) is True
+
+
+def test_owner_match_via_custom_fields_dict():
+    story = {"custom_fields": {"custom_field_four": "江林", "custom_field_four_label": "前端"}}
+    assert _story_matches_owner(story, ["江林"]) is True
+
+
 def test_owner_match_negative_when_not_owner_or_frontend():
     story = {"owner": "李四", "前端": "张三"}
     assert _story_matches_owner(story, ["江林"]) is False

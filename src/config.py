@@ -82,6 +82,8 @@ class Config:
     module_path_sep: str = os.getenv("MODULE_PATH_SEP", "/")
     story_fetch_limit: int = 0
     story_owner_quick_tokens: List[str] = field(default_factory=list)
+    tapd_frontend_field_keys: List[str] = field(default_factory=list)
+    tapd_frontend_field_labels: List[str] = field(default_factory=list)
     tapd_story_cache_ttl_seconds: int = 0
     tapd_story_cache_max_entries: int = 0
     tapd_iteration_cache_ttl_seconds: int = 0
@@ -167,6 +169,8 @@ def load_config() -> Config:
         tapd_track_existing_ids=_flag("TAPD_TRACK_EXISTING_IDS", "1"),
         story_fetch_limit=_env_int("STORY_FETCH_LIMIT", 0),
         story_owner_quick_tokens=_csv("STORY_OWNER_QUICK_TOKENS", "江林,喻童,王荣祥"),
+        tapd_frontend_field_keys=_csv("TAPD_FRONTEND_FIELD_KEYS", "custom_field_four"),
+        tapd_frontend_field_labels=_csv("TAPD_FRONTEND_FIELD_LABELS", "前端"),
         tapd_story_cache_ttl_seconds=_env_int("TAPD_STORY_CACHE_TTL", 120),
         tapd_story_cache_max_entries=_env_int("TAPD_STORY_CACHE_MAX", 4),
         tapd_iteration_cache_ttl_seconds=_env_int("TAPD_ITERATION_CACHE_TTL", 60),

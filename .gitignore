@@ -13,6 +13,7 @@ data/state.json
 data/cache/
 data/testflow/
 logs/
+docs/
 
 # OS
 .DS_Store

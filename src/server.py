@@ -26,7 +26,7 @@ if str(SRC_DIR) not in sys.path:
 
 from config import load_config
 from mapper import extract_status_label
-from sync import _story_owner_tokens
+from sync import _story_owner_tokens, _collect_frontend_assignees
 from tapd_client import TAPDClient
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = REPO_ROOT / "scripts"
@@ -960,6 +960,8 @@ def _load_current_iteration_stories(
         seen.add(sid)
         total_count += 1
 
+        frontend_assignees = _collect_frontend_assignees(story)
+
         owners = _story_owner_tokens(story)
         if not owners:
             owners = [default_owner]
@@ -988,6 +990,7 @@ def _load_current_iteration_stories(
             owners=owners,
             iteration=iteration_name,
             updatedAt=str(updated).strip() if updated else None,
+            frontend=" / ".join(frontend_assignees) if frontend_assignees else None,
             url=str(story.get("url")).strip() if story.get("url") else None,
         )
         if max_items is None or len(stories) < max_items:
