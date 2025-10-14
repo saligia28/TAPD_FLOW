@@ -1220,6 +1220,8 @@ class NotionWrapper:
             pr = story.get("priority") or story.get("priority_label") or story.get("priority_name")
             if pr is not None and str(pr).strip():
                 props[self._priority_prop] = {"select": {"name": str(pr)}}
+        # Extended metadata: tags / attachments / comments
+        self._apply_extended_story_properties(props, story)
         # Planned dates & FE hours
         start_d, end_d = self._extract_dates(story)
         if self._planned_range_prop and (start_d or end_d):
@@ -1369,6 +1371,8 @@ class NotionWrapper:
             pr = story.get("priority") or story.get("priority_label") or story.get("priority_name")
             if pr is not None and str(pr).strip():
                 props[self._priority_prop] = {"select": {"name": str(pr)}}
+        # Extended metadata: tags / attachments / comments
+        self._apply_extended_story_properties(props, story)
         # Planned dates & FE hours
         start_d, end_d = self._extract_dates(story)
         if self._planned_range_prop and (start_d or end_d):
