@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from datetime import datetime, timezone
 from urllib.parse import urljoin
 import time
@@ -294,119 +294,129 @@ class TAPDClient:
         return extras
 
     def _fetch_story_tags(self, story_id: str) -> List[str]:
-        params_candidates = self._build_param_candidates(story_id)
-        res = self._fetch_with_variants(self.story_tags_path, params_candidates)
-        items = self._extract_payload_list(res, ("Tag", "StoryTag", "story_tag", "tag"))
+        params_candidates = self._tag_param_candidates(story_id)
         tags: List[str] = []
-        for item in items:
-            if isinstance(item, dict):
-                for key in ("name", "tag", "tag_name", "label", "title", "value"):
-                    val = item.get(key)
-                    if val is None:
-                        continue
-                    if isinstance(val, str):
-                        val = val.strip()
-                        if val:
-                            tags.append(val)
+        for path in self._candidate_paths(self.story_tags_path, ("story_tags", "tags")):
+            res = self._fetch_with_variants(path, params_candidates)
+            items = self._extract_payload_list(res, ("Tag", "StoryTag", "story_tag", "tag"))
+            if not items and isinstance(res, dict):
+                fallback = res.get("tags") or res.get("tag") or res.get("data")
+                if isinstance(fallback, list):
+                    items = fallback  # type: ignore[assignment]
+                elif isinstance(fallback, str):
+                    segments = fallback.replace(";", ",").split(",")
+                    tags.extend([seg.strip() for seg in segments if seg.strip()])
+                    if tags:
+                        break
+            for item in items:
+                if isinstance(item, dict):
+                    for key in ("name", "tag", "tag_name", "label", "title", "value"):
+                        val = item.get(key)
+                        if val is None:
+                            continue
+                        if isinstance(val, str):
+                            val = val.strip()
+                            if val:
+                                tags.append(val)
+                                break
+                        elif isinstance(val, (int, float)):
+                            tags.append(str(val))
                             break
-                    elif isinstance(val, (int, float)):
-                        tags.append(str(val))
-                        break
-                    elif isinstance(val, (list, tuple)):
-                        for v in val:
-                            s = str(v).strip()
-                            if s:
-                                tags.append(s)
-                        break
-            elif isinstance(item, str):
-                segments = item.replace(";", ",").split(",")
-                tags.extend([seg.strip() for seg in segments if seg.strip()])
-        if not tags and isinstance(res, dict):
-            fallback = res.get("tags") or res.get("tag") or res.get("data")
-            if isinstance(fallback, str):
-                tags.extend([seg.strip() for seg in fallback.replace(";", ",").split(",") if seg.strip()])
+                        elif isinstance(val, (list, tuple)):
+                            for v in val:
+                                s = str(v).strip()
+                                if s:
+                                    tags.append(s)
+                            break
+                elif isinstance(item, str):
+                    segments = item.replace(";", ",").split(",")
+                    tags.extend([seg.strip() for seg in segments if seg.strip()])
+            if tags:
+                break
         return self._dedup_preserve(tags)
 
     def _fetch_story_attachments(self, story_id: str) -> List[Dict[str, Any]]:
-        params_candidates = self._build_param_candidates(story_id)
-        res = self._fetch_with_variants(
-            self.story_attachments_path,
-            params_candidates,
-        )
-        items = self._extract_payload_list(
-            res,
-            ("Attachment", "StoryAttachment", "story_attachment", "attachment"),
-        )
         attachments: List[Dict[str, Any]] = []
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            att_id = self._first_str(item, ("id", "attachment_id", "file_id", "document_id", "aid")) or ""
-            name = self._first_str(item, ("name", "title", "filename", "file_name", "attachment_name")) or ""
-            url = self._first_str(item, ("url", "download_url", "preview_url", "attachment_url", "file_url")) or ""
-            size_raw = item.get("size") or item.get("file_size") or item.get("attachment_size") or item.get("filesize")
-            size = self._to_int(size_raw)
-            file_type = self._first_str(item, ("filetype", "file_type", "type", "mime_type", "extension")) or ""
-            creator = self._first_str(item, ("creator", "owner", "author", "uploader", "create_user", "created_by")) or ""
-            created = self._first_str(item, ("created", "created_at", "create_time", "uploaded", "upload_time", "create_at", "createdon")) or ""
-            # Skip completely empty attachment entries
-            if not (name or url):
-                continue
-            attachments.append(
-                {
-                    "id": att_id,
-                    "name": name or f"附件{len(attachments) + 1}",
-                    "url": url,
-                    "size": size,
-                    "file_type": file_type,
-                    "creator": creator,
-                    "created": created,
-                }
+        params_candidates = self._attachment_param_candidates(story_id)
+        for path in self._candidate_paths(self.story_attachments_path, ("story_attachments", "attachments")):
+            res = self._fetch_with_variants(path, params_candidates)
+            items = self._extract_payload_list(
+                res,
+                ("Attachment", "StoryAttachment", "story_attachment", "attachment"),
             )
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                att_id = self._first_str(item, ("id", "attachment_id", "file_id", "document_id", "aid")) or ""
+                name = self._first_str(item, ("name", "title", "filename", "file_name", "attachment_name")) or ""
+                url = self._first_str(item, ("url", "download_url", "preview_url", "attachment_url", "file_url")) or ""
+                size_raw = item.get("size") or item.get("file_size") or item.get("attachment_size") or item.get("filesize")
+                size = self._to_int(size_raw)
+                file_type = self._first_str(item, ("filetype", "file_type", "type", "mime_type", "extension")) or ""
+                creator = self._first_str(item, ("creator", "owner", "author", "uploader", "create_user", "created_by")) or ""
+                created = self._first_str(item, ("created", "created_at", "create_time", "uploaded", "upload_time", "create_at", "createdon")) or ""
+                if not (name or url):
+                    continue
+                attachments.append(
+                    {
+                        "id": att_id,
+                        "name": name or f"附件{len(attachments) + 1}",
+                        "url": url,
+                        "size": size,
+                        "file_type": file_type,
+                        "creator": creator,
+                        "created": created,
+                    }
+                )
+            if attachments:
+                break
         return attachments
 
     def _fetch_story_comments(self, story_id: str) -> List[Dict[str, Any]]:
-        params_candidates = self._build_param_candidates(story_id)
-        res = self._fetch_with_variants(
-            self.story_comments_path,
-            params_candidates,
-        )
-        items = self._extract_payload_list(
-            res,
-            ("Comment", "StoryComment", "story_comment", "comment"),
-        )
         comments: List[Dict[str, Any]] = []
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            content_val = (
-                item.get("content")
-                or item.get("comment")
-                or item.get("text")
-                or item.get("detail")
-                or item.get("body")
-                or item.get("description")
+        params_candidates = self._comment_param_candidates(story_id)
+        for path in self._candidate_paths(self.story_comments_path, ("story_comments", "comments")):
+            res = self._fetch_with_variants(
+                path,
+                params_candidates,
             )
-            if isinstance(content_val, dict):
-                inner = content_val.get("content") or content_val.get("text")
-                if inner:
-                    content_val = inner
-            if isinstance(content_val, (list, tuple)):
-                content_val = "\n".join(str(v).strip() for v in content_val if str(v).strip())
-            content = str(content_val).strip() if content_val is not None else ""
-            author = self._first_str(item, ("author", "creator", "owner", "commenter", "user", "created_by")) or ""
-            created = self._first_str(item, ("created", "created_at", "create_time", "added_time", "create_at", "createdon", "time")) or ""
-            comment_id = self._first_str(item, ("id", "comment_id", "cid")) or ""
-            if not content and not author:
-                continue
-            comments.append(
-                {
-                    "id": comment_id,
-                    "author": author,
-                    "content": content,
-                    "created": created,
-                }
+            items = self._extract_payload_list(
+                res,
+                ("Comment", "StoryComment", "story_comment", "comment"),
             )
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                content_val = (
+                    item.get("content")
+                    or item.get("comment")
+                    or item.get("text")
+                    or item.get("detail")
+                    or item.get("body")
+                    or item.get("description")
+                )
+                if isinstance(content_val, dict):
+                    inner = content_val.get("content") or content_val.get("text")
+                    if inner:
+                        content_val = inner
+                if isinstance(content_val, (list, tuple)):
+                    content_val = "\n".join(str(v).strip() for v in content_val if str(v).strip())
+                content = str(content_val).strip() if content_val is not None else ""
+                author = self._first_str(item, ("author", "creator", "owner", "commenter", "user", "created_by")) or ""
+                created = self._first_str(item, ("created", "created_at", "create_time", "added_time", "create_at", "createdon", "time")) or ""
+                comment_id = self._first_str(item, ("id", "comment_id", "cid")) or ""
+                if not content and not author:
+                    continue
+                comments.append(
+                    {
+                        "id": comment_id,
+                        "author": author,
+                        "content": content,
+                        "created": created,
+                    }
+                )
+            if comments:
+                break
         comments.sort(key=lambda x: x.get("created") or "")
         return comments
 
@@ -511,6 +521,7 @@ class TAPDClient:
             "storyId",
             "storyID",
             "story_ids",
+            "entry_id",
             "object_id",
             "resource_id",
         )
@@ -564,3 +575,55 @@ class TAPDClient:
                 if key in payload and payload[key]:
                     return True
         return False
+
+    def _candidate_paths(self, configured: Optional[str], fallbacks: Sequence[str]) -> List[str]:
+        paths: List[str] = []
+        seen: set[str] = set()
+        if configured:
+            normalized = configured.lstrip("/")
+            if normalized and normalized not in seen:
+                paths.append(normalized)
+                seen.add(normalized)
+        for item in fallbacks:
+            normalized = item.lstrip("/") if item else ""
+            if normalized and normalized not in seen:
+                paths.append(normalized)
+                seen.add(normalized)
+        return paths
+
+    def _attachment_param_candidates(self, story_id: str) -> List[Dict[str, Any]]:
+        base = {"workspace_id": self.workspace_id, "limit": 200}
+        id_keys = ("entry_id", "story_id", "id", "resource_id", "workitem_id")
+        type_values = ("story", "stories", "Story", None)
+        candidates: List[Dict[str, Any]] = []
+        for key in id_keys:
+            for type_val in type_values:
+                params = dict(base)
+                params[key] = story_id
+                if type_val:
+                    params["type"] = type_val
+                candidates.append(params)
+        return candidates
+
+    def _comment_param_candidates(self, story_id: str) -> List[Dict[str, Any]]:
+        base = {"workspace_id": self.workspace_id, "limit": 200}
+        id_keys = ("entry_id", "story_id", "id", "resource_id", "workitem_id")
+        entry_types = ("stories", "story", "Story")
+        candidates: List[Dict[str, Any]] = []
+        for key in id_keys:
+            for entry_type in entry_types:
+                params = dict(base)
+                params[key] = story_id
+                params["entry_type"] = entry_type
+                candidates.append(params)
+        return candidates
+
+    def _tag_param_candidates(self, story_id: str) -> List[Dict[str, Any]]:
+        base = {"workspace_id": self.workspace_id}
+        id_keys = ("story_id", "id", "workitem_id", "entry_id", "resource_id", "story_ids")
+        candidates: List[Dict[str, Any]] = []
+        for key in id_keys:
+            params = dict(base)
+            params[key] = story_id
+            candidates.append(params)
+        return candidates
