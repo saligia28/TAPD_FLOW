@@ -597,6 +597,37 @@ ACTIONS: Dict[str, ActionDefinition] = {
         ),
         hint="生成文件保存在 testflow 输出目录；如需邮件发送请手动加 --send-mail。",
     ),
+    "debug-notion": ActionDefinition(
+        id="debug-notion",
+        title="Notion 诊断",
+        description="检查 Notion 数据库中的 TAPD_ID 映射与缺失页面。",
+        command=("python3", str(SCRIPTS_DIR / "notion_debug.py")),
+        default_args=(),
+        options=(
+            ActionOption(
+                id="show-props",
+                label="--show-props",
+                args=("--show-props",),
+                description="打印当前识别到的 Notion 属性信息。",
+                default_selected=True,
+            ),
+            ActionOption(
+                id="list-missing",
+                label="--list-missing",
+                args=("--list-missing",),
+                description="列出数据库中 TAPD_ID 为空的页面。",
+                default_selected=True,
+            ),
+            ActionOption(
+                id="limit-20",
+                label="--limit 20",
+                args=("--limit", "20"),
+                description="限制缺失列表的最大条数（默认 20）。",
+                default_selected=True,
+            ),
+        ),
+        hint="可直接在页面选择需求 ID 触发排查；若未选择，可用 NOTION_DEBUG_IDS 环境变量兜底。",
+    ),
 }
 
 
@@ -741,6 +772,9 @@ async def create_job(payload: JobCreateRequest) -> JobResponse:
             cleaned.append(token)
         return cleaned
 
+    if action.id == "debug-notion":
+        selected_args = remove_owner_args(selected_args)
+
     story_ids = [sid.strip() for sid in payload.story_ids if sid and sid.strip()]
     if story_ids:
         joined = ",".join(story_ids)
@@ -749,6 +783,8 @@ async def create_job(payload: JobCreateRequest) -> JobResponse:
             selected_args.extend(["--story-ids", joined])
         elif action.id == "update-requirements":
             selected_args = remove_owner_args(selected_args)
+            selected_args.extend(["--ids", joined])
+        elif action.id == "debug-notion":
             selected_args.extend(["--ids", joined])
 
     try:
