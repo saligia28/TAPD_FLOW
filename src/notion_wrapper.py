@@ -824,22 +824,31 @@ class NotionWrapper:
                     "url": {"equals": tapd_id_str},
                 }
             if filter_payload:
-                try:
-                    res = self.client.databases.query(
-                        database_id=self.database_id,
-                        filter=filter_payload,
-                        page_size=1,
-                    )
-                    results = res.get("results", [])
-                    if results:
-                        return results[0]["id"]
-                except Exception as exc:
-                    print(
-                        f"[notion] TAPD_ID lookup failed for property {self._id_prop}"
-                        f" ({prop_type}): {exc}"
-                    )
-                    if not suppress_errors:
-                        raise
+                attempts = 3
+                for attempt in range(1, attempts + 1):
+                    try:
+                        res = self.client.databases.query(
+                            database_id=self.database_id,
+                            filter=filter_payload,
+                            page_size=1,
+                        )
+                        results = res.get("results", [])
+                        if results:
+                            return results[0]["id"]
+                        break
+                    except Exception as exc:
+                        if attempt >= attempts:
+                            print(
+                                f"[notion] TAPD_ID lookup failed for property {self._id_prop}"
+                                f" ({prop_type}) after {attempt} attempts: {exc}"
+                            )
+                            if not suppress_errors:
+                                raise
+                        else:
+                            print(
+                                f"[notion] TAPD_ID lookup failed for property {self._id_prop}"
+                                f" ({prop_type}) attempt {attempt}: {exc}"
+                            )
         # Fallback: search in description rich_text
         if self._desc_prop:
             try:
@@ -878,6 +887,102 @@ class NotionWrapper:
             if not suppress_errors:
                 raise
         return None
+
+    def debug_property_overview(self) -> Dict[str, Optional[str]]:
+        return {
+            "title_prop": self._title_prop,
+            "id_prop": self._id_prop,
+            "id_prop_type": self._id_prop_type,
+            "desc_prop": self._desc_prop,
+            "module_prop": self._module_prop,
+            "owner_prop": self._owner_prop,
+            "priority_prop": self._priority_prop,
+        }
+
+    def debug_lookup(self, tapd_id: str) -> Dict[str, Any]:
+        info: Dict[str, Any] = {
+            "tapd_id": str(tapd_id),
+            "client_ready": bool(self.client),
+            "id_prop": self._id_prop,
+            "id_prop_type": self._id_prop_type,
+            "id_query_filter": None,
+            "id_query_count": 0,
+            "id_query_page": None,
+            "desc_prop": self._desc_prop,
+            "desc_query_count": 0,
+            "desc_query_page": None,
+        }
+        if not self.client or not tapd_id:
+            return info
+        tapd_id_str = str(tapd_id)
+        filter_payload: Optional[Dict[str, Any]] = None
+        if self._id_prop:
+            prop_type = self._id_prop_type or "rich_text"
+            if prop_type == "rich_text":
+                filter_payload = {
+                    "property": self._id_prop,
+                    "rich_text": {"equals": tapd_id_str},
+                }
+            elif prop_type == "title":
+                filter_payload = {
+                    "property": self._id_prop,
+                    "title": {"equals": tapd_id_str},
+                }
+            elif prop_type == "number":
+                number_value: Optional[object] = None
+                if tapd_id_str.isdigit():
+                    try:
+                        number_value = int(tapd_id_str)
+                    except ValueError:
+                        number_value = None
+                if number_value is None:
+                    try:
+                        number_value = float(tapd_id_str)
+                    except ValueError:
+                        number_value = None
+                if number_value is not None:
+                    filter_payload = {
+                        "property": self._id_prop,
+                        "number": {"equals": number_value},
+                    }
+                else:
+                    info["id_filter_note"] = "tapd_id not numeric for number property"
+            elif prop_type == "url":
+                filter_payload = {
+                    "property": self._id_prop,
+                    "url": {"equals": tapd_id_str},
+                }
+        if filter_payload:
+            info["id_query_filter"] = filter_payload
+            try:
+                res = self.client.databases.query(  # type: ignore
+                    database_id=self.database_id,
+                    filter=filter_payload,
+                    page_size=1,
+                )
+                results = res.get("results", [])
+                info["id_query_count"] = len(results)
+                if results:
+                    info["id_query_page"] = results[0].get("id")
+            except Exception as exc:
+                info["id_query_error"] = str(exc)
+        if self._desc_prop:
+            try:
+                res = self.client.databases.query(  # type: ignore
+                    database_id=self.database_id,
+                    filter={
+                        "property": self._desc_prop,
+                        "rich_text": {"contains": f"TAPD_ID: {tapd_id_str}"},
+                    },
+                    page_size=1,
+                )
+                results = res.get("results", [])
+                info["desc_query_count"] = len(results)
+                if results:
+                    info["desc_query_page"] = results[0].get("id")
+            except Exception as exc:
+                info["desc_query_error"] = str(exc)
+        return info
 
     def update_story_page_if_exists(self, story: Dict[str, Any], blocks: Optional[list] = None) -> Optional[str]:
         """Only update existing page; never create.

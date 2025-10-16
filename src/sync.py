@@ -795,6 +795,18 @@ def run_update(
                     skipped += 1
                     continue
         if not page_id and not create_missing:
+            try:
+                diag = notion.debug_lookup(sid)  # type: ignore[attr-defined]
+                print(
+                    "[update] debug",
+                    f"TAPD_ID={sid}",
+                    f"id_prop={diag.get('id_prop')}",
+                    f"id_query_count={diag.get('id_query_count')}",
+                    f"desc_query_count={diag.get('desc_query_count')}",
+                    f"id_query_filter={diag.get('id_query_filter')}",
+                )
+            except Exception:
+                pass
             print(f"[update] skip id={sid} (page not found; use --create-missing to create)")
             skipped += 1
             continue

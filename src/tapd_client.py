@@ -8,6 +8,7 @@ import random
 import requests
 from requests import exceptions as req_exc
 
+from tapd_extras_fetchers import fetch_story_attachments, fetch_story_comments
 
 class TAPDClient:
     """Minimal TAPD API client.
@@ -64,6 +65,10 @@ class TAPDClient:
         if self.api_user and self.api_password:
             return (self.api_user, self.api_password)
         return None
+
+    def _has_basic_auth(self) -> bool:
+        # Attachments/comments endpoints currently accept only Basic Auth credentials.
+        return bool(self.api_user and self.api_password)
 
     def _get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """GET with light retry on transient network/5xx/429/SSL errors."""
@@ -267,6 +272,9 @@ class TAPDClient:
         if not sid:
             return extras
 
+        privileged = self._has_basic_auth()
+        # Legacy extras (attachments/comments) require Basic Auth; skip when only token is provided.
+
         if include_tags and self.story_tags_path:
             try:
                 tags = self._fetch_story_tags(sid)
@@ -274,16 +282,16 @@ class TAPDClient:
                     extras["tags"] = tags
             except Exception as exc:  # pragma: no cover - network failure path
                 errors.append(f"tags: {exc}")
-        if include_attachments and self.story_attachments_path:
+        if include_attachments and self.story_attachments_path and privileged:
             try:
-                attachments = self._fetch_story_attachments(sid)
+                attachments = fetch_story_attachments(self, sid)
                 if attachments:
                     extras["attachments"] = attachments
             except Exception as exc:  # pragma: no cover - network failure path
                 errors.append(f"attachments: {exc}")
-        if include_comments and self.story_comments_path:
+        if include_comments and self.story_comments_path and privileged:
             try:
-                comments = self._fetch_story_comments(sid)
+                comments = fetch_story_comments(self, sid)
                 if comments:
                     extras["comments"] = comments
             except Exception as exc:  # pragma: no cover - network failure path
@@ -335,90 +343,6 @@ class TAPDClient:
                 break
         return self._dedup_preserve(tags)
 
-    def _fetch_story_attachments(self, story_id: str) -> List[Dict[str, Any]]:
-        attachments: List[Dict[str, Any]] = []
-        params_candidates = self._attachment_param_candidates(story_id)
-        for path in self._candidate_paths(self.story_attachments_path, ("story_attachments", "attachments")):
-            res = self._fetch_with_variants(path, params_candidates)
-            items = self._extract_payload_list(
-                res,
-                ("Attachment", "StoryAttachment", "story_attachment", "attachment"),
-            )
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                att_id = self._first_str(item, ("id", "attachment_id", "file_id", "document_id", "aid")) or ""
-                name = self._first_str(item, ("name", "title", "filename", "file_name", "attachment_name")) or ""
-                url = self._first_str(item, ("url", "download_url", "preview_url", "attachment_url", "file_url")) or ""
-                size_raw = item.get("size") or item.get("file_size") or item.get("attachment_size") or item.get("filesize")
-                size = self._to_int(size_raw)
-                file_type = self._first_str(item, ("filetype", "file_type", "type", "mime_type", "extension")) or ""
-                creator = self._first_str(item, ("creator", "owner", "author", "uploader", "create_user", "created_by")) or ""
-                created = self._first_str(item, ("created", "created_at", "create_time", "uploaded", "upload_time", "create_at", "createdon")) or ""
-                if not (name or url):
-                    continue
-                attachments.append(
-                    {
-                        "id": att_id,
-                        "name": name or f"附件{len(attachments) + 1}",
-                        "url": url,
-                        "size": size,
-                        "file_type": file_type,
-                        "creator": creator,
-                        "created": created,
-                    }
-                )
-            if attachments:
-                break
-        return attachments
-
-    def _fetch_story_comments(self, story_id: str) -> List[Dict[str, Any]]:
-        comments: List[Dict[str, Any]] = []
-        params_candidates = self._comment_param_candidates(story_id)
-        for path in self._candidate_paths(self.story_comments_path, ("story_comments", "comments")):
-            res = self._fetch_with_variants(
-                path,
-                params_candidates,
-            )
-            items = self._extract_payload_list(
-                res,
-                ("Comment", "StoryComment", "story_comment", "comment"),
-            )
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                content_val = (
-                    item.get("content")
-                    or item.get("comment")
-                    or item.get("text")
-                    or item.get("detail")
-                    or item.get("body")
-                    or item.get("description")
-                )
-                if isinstance(content_val, dict):
-                    inner = content_val.get("content") or content_val.get("text")
-                    if inner:
-                        content_val = inner
-                if isinstance(content_val, (list, tuple)):
-                    content_val = "\n".join(str(v).strip() for v in content_val if str(v).strip())
-                content = str(content_val).strip() if content_val is not None else ""
-                author = self._first_str(item, ("author", "creator", "owner", "commenter", "user", "created_by")) or ""
-                created = self._first_str(item, ("created", "created_at", "create_time", "added_time", "create_at", "createdon", "time")) or ""
-                comment_id = self._first_str(item, ("id", "comment_id", "cid")) or ""
-                if not content and not author:
-                    continue
-                comments.append(
-                    {
-                        "id": comment_id,
-                        "author": author,
-                        "content": content,
-                        "created": created,
-                    }
-                )
-            if comments:
-                break
-        comments.sort(key=lambda x: x.get("created") or "")
-        return comments
 
     def _extract_payload_list(
         self,
@@ -590,33 +514,6 @@ class TAPDClient:
                 paths.append(normalized)
                 seen.add(normalized)
         return paths
-
-    def _attachment_param_candidates(self, story_id: str) -> List[Dict[str, Any]]:
-        base = {"workspace_id": self.workspace_id, "limit": 200}
-        id_keys = ("entry_id", "story_id", "id", "resource_id", "workitem_id")
-        type_values = ("story", "stories", "Story", None)
-        candidates: List[Dict[str, Any]] = []
-        for key in id_keys:
-            for type_val in type_values:
-                params = dict(base)
-                params[key] = story_id
-                if type_val:
-                    params["type"] = type_val
-                candidates.append(params)
-        return candidates
-
-    def _comment_param_candidates(self, story_id: str) -> List[Dict[str, Any]]:
-        base = {"workspace_id": self.workspace_id, "limit": 200}
-        id_keys = ("entry_id", "story_id", "id", "resource_id", "workitem_id")
-        entry_types = ("stories", "story", "Story")
-        candidates: List[Dict[str, Any]] = []
-        for key in id_keys:
-            for entry_type in entry_types:
-                params = dict(base)
-                params[key] = story_id
-                params["entry_type"] = entry_type
-                candidates.append(params)
-        return candidates
 
     def _tag_param_candidates(self, story_id: str) -> List[Dict[str, Any]]:
         base = {"workspace_id": self.workspace_id}
