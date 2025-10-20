@@ -8,9 +8,9 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-import sync  # type: ignore
-from config import Config  # type: ignore
-from state import store  # type: ignore
+import services.sync.service as sync  # type: ignore
+from core.config import Config  # type: ignore
+from core.state import store  # type: ignore
 
 
 class DummyTapd:
@@ -87,7 +87,7 @@ def test_run_sync_refreshes_tracked_story(patched_state, monkeypatch, tmp_path):
 
     cfg = Config()
     cfg.notion_token = "token"
-    cfg.notion_database_id = "db"
+    cfg.notion_requirement_db_id = "db"
     cfg.tapd_fetch_tags = False
     cfg.tapd_fetch_attachments = False
     cfg.tapd_fetch_comments = False
@@ -132,7 +132,7 @@ def test_run_sync_with_explicit_story_ids(patched_state, monkeypatch, tmp_path):
 
     cfg = Config()
     cfg.notion_token = "token"
-    cfg.notion_database_id = "db"
+    cfg.notion_requirement_db_id = "db"
     cfg.tapd_fetch_tags = False
     cfg.tapd_fetch_attachments = False
     cfg.tapd_fetch_comments = False

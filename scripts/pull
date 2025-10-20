@@ -21,13 +21,13 @@ from _pipeline import (  # type: ignore
     format_failure_markdown,
     run_step,
 )
-from config import load_config  # type: ignore
-from notifications import (  # type: ignore
+from core.config import load_config  # type: ignore
+from services.notifications import (  # type: ignore
     format_sync_markdown,
     format_update_markdown,
     send_wecom_markdown,
 )
-from sync import run_sync, run_sync_by_modules, run_update_all  # type: ignore
+from services.sync import run_sync, run_sync_by_modules, run_update_all  # type: ignore
 
 
 def parse_args() -> argparse.Namespace:

@@ -7,8 +7,8 @@ from typing import Iterable, List, Optional, Tuple
 import requests
 from requests import Response
 
-from config import Config
-from content import html_to_text
+from core.config import Config
+from integrations.notion.content import html_to_text
 
 from .models import TestCase
 from .testers import TesterRegistry

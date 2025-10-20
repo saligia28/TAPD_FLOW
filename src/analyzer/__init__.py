@@ -6,7 +6,7 @@ from .rule_based import analyze as rule_analyze
 from .llm import LLMAnalysisError, LLMNotConfigured, analyze_with_llm
 
 if TYPE_CHECKING:  # pragma: no cover
-    from config import Config
+    from core.config import Config
 
 
 def run_analysis(

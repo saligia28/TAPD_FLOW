@@ -5,7 +5,7 @@ import html as ihtml
 from typing import TYPE_CHECKING
 from bs4 import BeautifulSoup, NavigableString, Tag  # type: ignore
 from analyzer.image import analyze_images  # type: ignore
-from story_utils import (
+from integrations.tapd.story_utils import (
     extract_story_attachments,
     extract_story_comments,
     extract_story_tags,
@@ -14,7 +14,7 @@ from story_utils import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover
-    from config import Config
+    from core.config import Config
 
 
 def html_to_text(html: str) -> str:

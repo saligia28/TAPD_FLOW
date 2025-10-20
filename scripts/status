@@ -10,9 +10,9 @@ SRC = os.path.join(REPO, "src")
 if SRC not in sys.path:
     sys.path.insert(0, SRC)
 
-from config import load_config  # type: ignore
-from tapd_client import TAPDClient  # type: ignore
-from notion_wrapper import NotionWrapper  # type: ignore
+from core.config import load_config  # type: ignore
+from integrations.tapd import TAPDClient  # type: ignore
+from integrations.notion import NotionWrapper  # type: ignore
 
 
 def main() -> None:
@@ -36,7 +36,7 @@ def main() -> None:
         api_base=cfg.tapd_api_base,
         stories_path=cfg.tapd_stories_path,
     )
-    notion = NotionWrapper(cfg.notion_token or "", cfg.notion_database_id or "")
+    notion = NotionWrapper(cfg.notion_token or "", cfg.notion_requirement_db_id or "")
 
     base_filters: Optional[Dict[str, Any]] = None
     if args.current_iteration:
@@ -58,4 +58,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

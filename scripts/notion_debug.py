@@ -12,8 +12,8 @@ SRC_DIR = os.path.join(REPO_DIR, "src")
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
-from config import load_config  # type: ignore
-from notion_wrapper import NotionWrapper  # type: ignore
+from core.config import load_config  # type: ignore
+from integrations.notion import NotionWrapper  # type: ignore
 
 
 def parse_args() -> argparse.Namespace:
@@ -69,7 +69,7 @@ def property_value(notion: NotionWrapper, props: Dict[str, object], name: Option
 def main() -> None:
     args = parse_args()
     cfg = load_config()
-    notion = NotionWrapper(cfg.notion_token or "", cfg.notion_database_id or "")
+    notion = NotionWrapper(cfg.notion_token or "", cfg.notion_requirement_db_id or "")
 
     if args.show_props:
         overview = notion.debug_property_overview()

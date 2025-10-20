@@ -1,347 +1,25 @@
 from __future__ import annotations
-from dataclasses import dataclass
-import os
+
 import time
-from typing import Any, Dict, Optional, Iterable, List, Sequence, Set
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
 
-# Use absolute imports so running `python3 src/cli.py` works without package context
-from config import Config
-from tapd_client import TAPDClient
-from notion_wrapper import NotionWrapper
 from analyzer.rule_based import analyze
-from mapper import map_story_to_notion_properties
-from content import build_blocks, build_page_blocks_from_story
-from state import store
+from core.config import Config
+from core.state import store
+from integrations.notion import (
+    NotionWrapper,
+    build_page_blocks_from_story,
+    map_story_to_notion_properties,
+)
+from integrations.tapd import TAPDClient
+from services.sync.frontend import story_matches_owner
+from services.sync.results import SyncResult, UpdateAllResult
+from services.sync.utils import (
+    enrich_story_with_extras,
+    story_tapd_id,
+    unwrap_story_payload,
+)
 from testflow.service import generate_testflow_for_stories
-
-
-FRONTEND_KEY_TOKENS = ("前端", "frontend")
-_DEFAULT_FRONTEND_FIELD_KEYS = ("custom_field_four",)
-_FRONTEND_LABEL_SUFFIXES = ("_label", "_name", "_display", "_display_name", "_title")
-
-
-@dataclass
-class SyncResult:
-    total: int
-    created: int
-    existing: int
-    skipped: int
-    duration: float
-    dry_run: bool
-
-
-@dataclass
-class UpdateAllResult:
-    scanned: int
-    updated: int
-    skipped: int
-    duration: float
-    dry_run: bool
-_FRONTEND_LABEL_KEYS = (
-    "name",
-    "label",
-    "title",
-    "field",
-    "field_name",
-    "field_label",
-    "display_name",
-    "key",
-)
-_FRONTEND_VALUE_KEYS = (
-    "value",
-    "values",
-    "text",
-    "content",
-    "display_value",
-    "display",
-    "user",
-    "assignee",
-    "owner",
-)
-
-
-def _normalize_match_str(value: str) -> str:
-    return "".join(ch for ch in value if ch.isalnum())
-
-
-def _flatten_strings(value: Any, depth: int = 0, limit: int = 4) -> List[str]:
-    if depth > limit:
-        return []
-    if value is None:
-        return []
-    if isinstance(value, str):
-        stripped = value.strip()
-        return [stripped] if stripped else []
-    if isinstance(value, (int, float, bool)):
-        return [str(value)]
-    if isinstance(value, (list, tuple, set)):
-        out: List[str] = []
-        for item in value:
-            out.extend(_flatten_strings(item, depth + 1, limit))
-        return out
-    if isinstance(value, dict):
-        out: List[str] = []
-        for val in value.values():
-            out.extend(_flatten_strings(val, depth + 1, limit))
-        return out
-    try:
-        text = str(value).strip()
-    except Exception:
-        return []
-    return [text] if text else []
-
-
-def _dedup_preserve_order(items: Iterable[str]) -> List[str]:
-    seen: Set[str] = set()
-    out: List[str] = []
-    for item in items:
-        if item is None:
-            continue
-        text = str(item).strip()
-        if not text or text in seen:
-            continue
-        seen.add(text)
-        out.append(text)
-    return out
-
-
-def _key_matches_frontend(name: str) -> bool:
-    if not name:
-        return False
-    low = name.lower()
-    for token in FRONTEND_KEY_TOKENS:
-        if token == token.lower():
-            if token in low:
-                return True
-        else:
-            if token in name:
-                return True
-    return False
-
-
-def _extract_labeled_frontend_values(entry: Dict[str, Any]) -> List[str]:
-    for label_key in _FRONTEND_LABEL_KEYS:
-        label = entry.get(label_key)
-        if isinstance(label, str) and _key_matches_frontend(label):
-            values: List[str] = []
-            for value_key in _FRONTEND_VALUE_KEYS:
-                if value_key in entry:
-                    values.extend(_flatten_strings(entry[value_key]))
-            if values:
-                return values
-            fallback: List[str] = []
-            for key, val in entry.items():
-                if key in _FRONTEND_LABEL_KEYS or key in _FRONTEND_VALUE_KEYS:
-                    continue
-                fallback.extend(_flatten_strings(val))
-            return fallback
-    return []
-
-
-def _collect_frontend_assignees(story: Dict[str, Any]) -> List[str]:
-    def _parse_csv_env(name: str, default: Sequence[str] = ()) -> List[str]:
-        raw = os.getenv(name)
-        if raw is None:
-            return list(default)
-        cleaned = raw.strip()
-        if not cleaned:
-            return list(default)
-        if cleaned.lower() in {"none", "null"}:
-            return []
-        return [segment.strip() for segment in raw.split(",") if segment.strip()]
-
-    def _frontend_config() -> tuple[List[str], List[str]]:
-        keys = _parse_csv_env("TAPD_FRONTEND_FIELD_KEYS", _DEFAULT_FRONTEND_FIELD_KEYS)
-        labels = _parse_csv_env("TAPD_FRONTEND_FIELD_LABELS", ("前端",))
-        return keys, labels
-
-    def _collect_from_mapping(mapping: Dict[str, Any], keys: Set[str], labels: Set[str]) -> List[str]:
-        collected: List[str] = []
-        if not isinstance(mapping, dict):
-            return collected
-        for key in keys:
-            if key in mapping:
-                collected.extend(_flatten_strings(mapping[key]))
-        if labels:
-            for name, label in mapping.items():
-                if not isinstance(name, str):
-                    continue
-                label_text = str(label).strip()
-                if not label_text or label_text not in labels:
-                    continue
-                base = name
-                for suffix in _FRONTEND_LABEL_SUFFIXES:
-                    if base.endswith(suffix):
-                        base = base[: -len(suffix)]
-                        break
-                for candidate in (
-                    base,
-                    f"{base}_value",
-                    f"{base}_values",
-                    f"{base}_text",
-                    f"{base}_content",
-                    f"{base}_display",
-                    f"{base}_display_value",
-                    f"{base}_assignee",
-                    f"{base}_user",
-                ):
-                    if candidate in mapping:
-                        collected.extend(_flatten_strings(mapping[candidate]))
-                        break
-        return collected
-
-    values: List[str] = []
-    config_keys, config_labels = _frontend_config()
-    key_set = {key for key in config_keys if key}
-    label_set = {label for label in config_labels if label}
-    if key_set or label_set:
-        values.extend(_collect_from_mapping(story, key_set, label_set))
-        custom_fields = story.get("custom_fields")
-        if isinstance(custom_fields, dict):
-            values.extend(_collect_from_mapping(custom_fields, key_set, label_set))
-        elif isinstance(custom_fields, list):
-            for entry in custom_fields:
-                if not isinstance(entry, dict):
-                    continue
-                entry_keys = [
-                    str(entry.get(candidate)).strip()
-                    for candidate in ("field", "field_name", "field_key", "key", "name")
-                    if entry.get(candidate)
-                ]
-                if any(candidate_key in key_set for candidate_key in entry_keys):
-                    for value_key in _FRONTEND_VALUE_KEYS:
-                        if value_key in entry:
-                            values.extend(_flatten_strings(entry[value_key]))
-                            break
-                    continue
-                label_text = str(
-                    entry.get("label")
-                    or entry.get("display_name")
-                    or entry.get("field_label")
-                    or entry.get("title")
-                    or ""
-                ).strip()
-                if label_text and label_text in label_set:
-                    for value_key in _FRONTEND_VALUE_KEYS:
-                        if value_key in entry:
-                            values.extend(_flatten_strings(entry[value_key]))
-                            break
-    seen: Set[int] = set()
-    stack: List[Any] = [story]
-    while stack:
-        current = stack.pop()
-        obj_id = id(current)
-        if obj_id in seen:
-            continue
-        seen.add(obj_id)
-        if isinstance(current, dict):
-            labeled = _extract_labeled_frontend_values(current)
-            if labeled:
-                values.extend(labeled)
-            for key, val in current.items():
-                if isinstance(key, str) and _key_matches_frontend(key):
-                    values.extend(_flatten_strings(val))
-                if isinstance(val, (dict, list, tuple, set)):
-                    stack.append(val)
-        elif isinstance(current, (list, tuple, set)):
-            for item in current:
-                if isinstance(item, (dict, list, tuple, set)):
-                    stack.append(item)
-    return _dedup_preserve_order(values)
-
-
-_OWNER_KEY_CANDIDATES = (
-    "owner",
-    "assignee",
-    "current_owner",
-    "owners",
-    "负责人",
-    "处理人",
-    "当前处理人",
-    "处理人员",
-    "经办人",
-    "执行人",
-)
-
-
-def _story_owner_tokens(story: Dict[str, Any]) -> List[str]:
-    tokens: List[str] = []
-    for key in _OWNER_KEY_CANDIDATES:
-        tokens.extend(_flatten_strings(story.get(key)))
-    tokens.extend(_collect_frontend_assignees(story))
-    return _dedup_preserve_order(tokens)
-
-
-def _story_matches_owner(story: Dict[str, Any], substrings: List[str]) -> bool:
-    if not substrings:
-        return True
-    candidates = _story_owner_tokens(story)
-    if not candidates:
-        return False
-    hay_raw = " ".join(candidates)
-    normalized_tokens = [_normalize_match_str(token) for token in candidates]
-    hay_norm = " ".join([token for token in normalized_tokens if token])
-    for sub in substrings:
-        if not sub:
-            continue
-        if sub in hay_raw:
-            return True
-        norm_sub = _normalize_match_str(sub)
-        if norm_sub and norm_sub in hay_norm:
-            return True
-    return False
-
-
-def _story_tapd_id(story: Dict[str, Any]) -> str:
-    raw_id = story.get("id") or story.get("story_id") or story.get("tapd_id")
-    if raw_id is None:
-        return ""
-    sid = str(raw_id).strip()
-    return sid
-
-def _enrich_story_with_extras(
-    tapd: TAPDClient,
-    cfg: Config,
-    story: Dict[str, Any],
-    *,
-    cache: Optional[Dict[str, Dict[str, Any]]] = None,
-    ctx: str = "sync",
-) -> None:
-    fetch_tags = getattr(cfg, "tapd_fetch_tags", False)
-    fetch_attachments = getattr(cfg, "tapd_fetch_attachments", False)
-    fetch_comments = getattr(cfg, "tapd_fetch_comments", False)
-    if not (fetch_tags or fetch_attachments or fetch_comments):
-        return
-    raw_id = story.get("id") or story.get("story_id") or story.get("tapd_id")
-    sid = str(raw_id).strip() if raw_id is not None else ""
-    if not sid:
-        return
-    extras: Dict[str, Any]
-    if cache is not None and sid in cache:
-        extras = cache[sid]
-    else:
-        extras = tapd.fetch_story_extras(
-            sid,
-            include_tags=fetch_tags,
-            include_attachments=fetch_attachments,
-            include_comments=fetch_comments,
-        )
-        if cache is not None:
-            cache[sid] = extras
-    errors = extras.pop("_errors", None)
-    if errors:
-        msg = "; ".join(str(e) for e in errors)
-        print(f"[{ctx}] extras warning id={sid}: {msg}")
-    for key, value in extras.items():
-        if key.startswith("_"):
-            continue
-        # Assign sanitized extras; copy lists/dicts to avoid accidental mutation
-        if isinstance(value, list):
-            story[key] = [dict(item) if isinstance(item, dict) else item for item in value]
-        elif isinstance(value, dict):
-            story[key] = dict(value)
-        else:
-            story[key] = value
 
 
 def run_sync(
@@ -381,7 +59,7 @@ def run_sync(
         story_attachments_path=getattr(cfg, "tapd_story_attachments_path", "/story_attachments"),
         story_comments_path=getattr(cfg, "tapd_story_comments_path", "/story_comments"),
     )
-    notion = NotionWrapper(cfg.notion_token or "", cfg.notion_database_id or "")
+    notion = NotionWrapper(cfg.notion_token or "", cfg.notion_requirement_db_id or "")
     extras_cache: Dict[str, Dict[str, Any]] = {}
     tracked_enabled = getattr(cfg, "tapd_track_existing_ids", True)
     tracked_ids: Set[str] = set()
@@ -459,7 +137,7 @@ def run_sync(
     def owner_matches(story: dict) -> bool:
         if restrict_to_ids:
             return True
-        return _story_matches_owner(story, owner_subs)
+        return story_matches_owner(story, owner_subs)
 
     def iteration_matches(story: dict) -> bool:
         if restrict_to_ids:
@@ -516,7 +194,7 @@ def run_sync(
                 except Exception as exc:
                     print(f"[sync] fetch by id failed id={sid}: {exc}")
                     continue
-                story = _unwrap_story_payload(res)
+                story = unwrap_story_payload(res)
                 if not isinstance(story, dict):
                     print(f"[sync] unexpected payload when fetching id={sid}")
                     continue
@@ -524,12 +202,12 @@ def run_sync(
                 yield story
         else:
             for raw in tapd.list_stories(updated_since=last, filters=filters or None):
-                story = _unwrap_story_payload(raw) or raw
+                story = unwrap_story_payload(raw) or raw
                 if isinstance(story, dict):
                     yield story
 
     for story in iterate_source_stories():
-        sid = _story_tapd_id(story)
+        sid = story_tapd_id(story)
         matches_iteration = iteration_matches(story)
         if matches_iteration:
             all_stories.append(story)
@@ -556,7 +234,7 @@ def run_sync(
             except Exception as exc:
                 print(f"[sync] refresh failed TAPD_ID={sid}: {exc}")
                 continue
-            story = _unwrap_story_payload(res)
+            story = unwrap_story_payload(res)
             if not isinstance(story, dict):
                 print(f"[sync] refresh skip TAPD_ID={sid} (unexpected payload)")
                 continue
@@ -598,7 +276,7 @@ def run_sync(
             cur_iter = None
 
     def owner_matches_creation(story: dict) -> bool:
-        return _story_matches_owner(story, creation_owner_subs)
+        return story_matches_owner(story, creation_owner_subs)
 
     def iteration_matches_creation(story: dict) -> bool:
         if not require_cur_iter_for_create:
@@ -618,13 +296,13 @@ def run_sync(
 
     for story in notion_candidates:
         count += 1
-        _enrich_story_with_extras(tapd, cfg, story, cache=extras_cache, ctx="sync")
+        enrich_story_with_extras(tapd, cfg, story, cache=extras_cache, ctx="sync")
         # Some TAPD records may carry description=None; coerce to empty string for analyzers
         text = story.get("description") or ""
         res = analyze(text)
         props = map_story_to_notion_properties(story)
         blocks = build_page_blocks_from_story(story, cfg=cfg)
-        tapd_id = _story_tapd_id(story)
+        tapd_id = story_tapd_id(story)
         if not tapd_id or tapd_id in ('', 'None', 'unknown'):
             print("[sync] skip story without valid TAPD id")
             continue
@@ -696,28 +374,6 @@ def run_sync(
         duration=duration,
         dry_run=dry_run,
     )
-
-
-def _unwrap_story_payload(obj: dict) -> Optional[dict]:
-    """Unwrap TAPD get_story/list payloads to a raw story dict."""
-    if not isinstance(obj, dict):
-        return None
-    if "Story" in obj and isinstance(obj["Story"], dict):
-        return obj["Story"]
-    if "data" in obj:
-        data = obj.get("data")
-        if isinstance(data, dict):
-            if "Story" in data and isinstance(data["Story"], dict):
-                return data["Story"]
-            return data if "id" in data else None
-        if isinstance(data, list) and data:
-            it = data[0]
-            if isinstance(it, dict):
-                return it.get("Story") if "Story" in it else it
-        return None
-    return obj if "id" in obj else None
-
-
 def run_update(
     cfg: Config,
     ids: List[str],
@@ -747,7 +403,7 @@ def run_update(
         story_attachments_path=getattr(cfg, "tapd_story_attachments_path", "/story_attachments"),
         story_comments_path=getattr(cfg, "tapd_story_comments_path", "/story_comments"),
     )
-    notion = NotionWrapper(cfg.notion_token or "", cfg.notion_database_id or "")
+    notion = NotionWrapper(cfg.notion_token or "", cfg.notion_requirement_db_id or "")
 
     updated = 0
     skipped = 0
@@ -764,14 +420,14 @@ def run_update(
             print(f"[update] fetch failed id={sid}: {e}")
             skipped += 1
             continue
-        story = _unwrap_story_payload(res)
+        story = unwrap_story_payload(res)
         if not isinstance(story, dict):
             print(f"[update] unexpected payload id={sid}")
             skipped += 1
             continue
         # Ensure id present and consistent
         story.setdefault("id", sid)
-        _enrich_story_with_extras(tapd, cfg, story, cache=extras_cache, ctx="update")
+        enrich_story_with_extras(tapd, cfg, story, cache=extras_cache, ctx="update")
 
         # Build blocks with latest analyzers
         text = story.get("description") or ""
@@ -865,7 +521,7 @@ def run_update_all(
         story_attachments_path=getattr(cfg, "tapd_story_attachments_path", "/story_attachments"),
         story_comments_path=getattr(cfg, "tapd_story_comments_path", "/story_comments"),
     )
-    notion = NotionWrapper(cfg.notion_token or "", cfg.notion_database_id or "")
+    notion = NotionWrapper(cfg.notion_token or "", cfg.notion_requirement_db_id or "")
 
     # Server-side filters: keep owner local (supports substring later) and build iteration filter if requested
     filters: Dict[str, object] = {}
@@ -890,7 +546,7 @@ def run_update_all(
         owner_subs = [s.strip() for s in str(only_owner).split(',') if s.strip()]
 
     def owner_matches(story: dict) -> bool:
-        return _story_matches_owner(story, owner_subs)
+        return story_matches_owner(story, owner_subs)
 
     def iteration_matches(story: dict) -> bool:
         if not cur_iter:
@@ -920,7 +576,7 @@ def run_update_all(
         tapd_id = str(raw_id) if raw_id is not None else ''
         if not tapd_id:
             continue
-        _enrich_story_with_extras(tapd, cfg, story, cache=extras_cache, ctx="update-all")
+        enrich_story_with_extras(tapd, cfg, story, cache=extras_cache, ctx="update-all")
         text = story.get("description") or ""
         res_an = analyze(text)
         props = map_story_to_notion_properties(story)
@@ -989,7 +645,7 @@ def run_update_from_notion(
         story_attachments_path=getattr(cfg, "tapd_story_attachments_path", "/story_attachments"),
         story_comments_path=getattr(cfg, "tapd_story_comments_path", "/story_comments"),
     )
-    notion = NotionWrapper(cfg.notion_token or "", cfg.notion_database_id or "")
+    notion = NotionWrapper(cfg.notion_token or "", cfg.notion_requirement_db_id or "")
 
     index = notion.existing_index()
     ids = list(index.keys())
@@ -1005,9 +661,9 @@ def run_update_from_notion(
         except Exception as e:
             print(f"[update-from-notion] fetch failed id={sid}: {e}")
             continue
-        story = _unwrap_story_payload(res) or {}
+        story = unwrap_story_payload(res) or {}
         story.setdefault("id", sid)
-        _enrich_story_with_extras(tapd, cfg, story, cache=extras_cache, ctx="update-from-notion")
+        enrich_story_with_extras(tapd, cfg, story, cache=extras_cache, ctx="update-from-notion")
         text = story.get("description") or ""
         res_an = analyze(text)
         props = map_story_to_notion_properties(story)
@@ -1060,7 +716,7 @@ def run_export(
         modules_path=cfg.tapd_modules_path,
         iterations_path=getattr(cfg, 'tapd_iterations_path', '/iterations'),
     )
-    notion = NotionWrapper(cfg.notion_token or "", cfg.notion_database_id or "")
+    notion = NotionWrapper(cfg.notion_token or "", cfg.notion_requirement_db_id or "")
     client = notion.client
     items: list = []
     next_cursor: Optional[str] = None
@@ -1111,7 +767,7 @@ def run_export(
     # Pull one page of results from Notion
     try:
         res = client.databases.query(  # type: ignore
-            database_id=cfg.notion_database_id,
+            database_id=cfg.notion_requirement_db_id,
             page_size=max(1, min(100, int(limit))),
             **({"start_cursor": cursor} if cursor else {}),
         )
@@ -1173,7 +829,7 @@ def run_export(
             if not matched_owner and tapd_id:
                 try:
                     st = tapd.get_story(str(tapd_id))
-                    s = _unwrap_story_payload(st) or {}
+                    s = unwrap_story_payload(st) or {}
                     hay = ' '.join(str(s.get(k) or '') for k in ('owner','assignee','current_owner','owners'))
                     if any(sub in hay for sub in owner_subs):
                         matched_owner = True
@@ -1196,7 +852,7 @@ def run_export(
         if current_iteration and cur_iter_id and tapd_id:
             try:
                 st = tapd.get_story(str(tapd_id))
-                s = _unwrap_story_payload(st) or {}
+                s = unwrap_story_payload(st) or {}
                 it = str(s.get('iteration_id') or '')
                 if it != cur_iter_id:
                     continue
@@ -1362,7 +1018,7 @@ def run_sync_by_modules(
         story_attachments_path=getattr(cfg, "tapd_story_attachments_path", "/story_attachments"),
         story_comments_path=getattr(cfg, "tapd_story_comments_path", "/story_comments"),
     )
-    notion = NotionWrapper(cfg.notion_token or "", cfg.notion_database_id or "")
+    notion = NotionWrapper(cfg.notion_token or "", cfg.notion_requirement_db_id or "")
 
     if wipe_first and not dry_run:
         print("[sync-mod] wipe-first enabled: clearing Notion database (archiving all pages) and switching to full fetch")
@@ -1422,7 +1078,7 @@ def run_sync_by_modules(
         owner_subs = [s.strip() for s in str(owner or cfg.tapd_only_owner).split(',') if s.strip()]
 
     def owner_matches(story: dict) -> bool:
-        return _story_matches_owner(story, owner_subs)
+        return story_matches_owner(story, owner_subs)
 
     def iteration_matches(story: dict) -> bool:
         if not cur_iter:
@@ -1531,7 +1187,7 @@ def run_sync_by_modules(
                 cur_iter = None
 
         def owner_matches_creation(story: dict) -> bool:
-            return _story_matches_owner(story, creation_owner_subs)
+            return story_matches_owner(story, creation_owner_subs)
 
         def iteration_matches_creation(story: dict) -> bool:
             if not require_cur_iter_for_create:
@@ -1560,7 +1216,7 @@ def run_sync_by_modules(
             # Ensure downstream Notion mapping sees the chosen module label
             if mod_label:
                 story.setdefault("module", mod_label)
-            _enrich_story_with_extras(tapd, cfg, story, cache=extras_cache, ctx="sync-mod")
+            enrich_story_with_extras(tapd, cfg, story, cache=extras_cache, ctx="sync-mod")
             text = story.get("description") or ""
             res = analyze(text)
             props = map_story_to_notion_properties(story)

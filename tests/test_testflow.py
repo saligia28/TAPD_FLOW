@@ -12,7 +12,7 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from config import Config  # type: ignore
+from core.config import Config  # type: ignore
 from testflow.exporter import export_suite_to_xmind
 from testflow.llm import build_fallback_cases, parse_response
 from testflow.models import TestCase, TesterContact, TesterSuite

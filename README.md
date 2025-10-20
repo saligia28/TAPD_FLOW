@@ -63,6 +63,66 @@ TAPD 与 Notion 之间的需求数据库同步与分析工具，支持在 TAPD �
 
 ---
 
+## 命令执行流程（scripts/）
+
+### `scripts/pull`
+1. 解析命令参数并加载配置，按需初始化企业微信通知调度器（`send_wecom_markdown`）。
+2. 根据 `--full/--since/--owner/--story-ids` 等旗标确定同步范围，自动补充“当前迭代”安全限制。
+3. 选择执行 `run_sync` 或 `run_sync_by_modules`：后者会为每个模块拼装过滤条件并逐批处理。
+4. 对匹配的需求执行标准流水线：经由 TAPD API 拉取详情 → `enrich_story_with_extras` 补齐标签/附件/评论 → `analyze` 产出分析 → 构建 Notion 属性和内容块。
+5. 按 `--execute/--insert-only/--wipe-first` 等选项决定创建、更新或跳过页面；dry-run 模式仅输出计划操作。
+6. 实际写入时同步跟踪状态（`data/state.json`）并可将成功/失败摘要投递到企业微信。
+7. 默认在成功写入后追加一次 `run_update_all` 作为兜底刷新；可通过 `-P/--no-post-update` 禁用。
+
+### `scripts/update`
+1. 解析参数后在三种模式间切换：指定 ID（`-i/-I/-f`）、从 Notion 反查（`--from-notion`）或默认的全量 `update-all`。
+2. `update-by-ids`：按 ID 调用 TAPD `get_story`，补齐扩展字段，更新 Notion 页面；`--create-missing` 可在缺页时创建。
+3. `update-from-notion`：先读取 Notion 索引，再回源 TAPD 完整刷新，完全不创建新页面。
+4. `update-all`：遍历 TAPD 列表，受负责人/迭代过滤，只对已存在的 Notion 页面执行更新。
+5. Dry-run 输出计划动作；执行模式会记录摘要并通过通知调度器推送成功或失败告警。
+
+### `scripts/export`
+1. 加载配置后构建 TAPD 与 Notion 客户端。
+2. 查询 Notion 数据库，应用负责人、模块及游标过滤；必要时回查 TAPD 校验当前迭代。
+3. 输出包含 `schema_version/items/next_cursor` 的 JSON，可写入文件或打印到标准输出。
+
+### `scripts/testflow`
+1. 校验危险操作确认（`--ack`、`--ack-mail`），加载测试人员表与配置。
+2. 初始化 TAPD 客户端，并按负责人/创建人/迭代限制抓取需求样本。
+3. 调用 `generate_testflow_for_stories`：优先尝试 LLM 生成测试用例，失败时回退规则模板。
+4. 当 `--execute` 生效时，将测试用例导出至 `TESTFLOW_OUTPUT_DIR` 生成附件，并打印生成结果。
+5. 如开启 `--send-mail`，构建邮件任务并调用 SMTP 发送，同时汇总发送状态。
+
+### `scripts/status`
+1. 初始化 TAPD 与 Notion 客户端，支持 `--current-iteration` 限制样本。
+2. 抽样拉取 TAPD 需求并聚合状态值。
+3. 调用 `NotionWrapper.sync_status_options_from_tapd` 更新 Notion 数据库中的状态选项。
+
+### `scripts/modules`
+1. 构建 TAPD 客户端。
+2. 遍历 `list_modules()` 并打印模块名称与 ID，便于配置或 `--by-modules` 排错。
+
+### `scripts/auth`
+1. 初始化 TAPD 客户端后执行 `test_auth()`。
+2. 默认输出状态码；`--verbose` 时打印完整响应 JSON 用于排查鉴权。
+
+### `scripts/analyze`
+1. 接收文本输入（缺省为示例），调用 `analyzer.rule_based.analyze`。
+2. 打印结构化 JSON，快速验证规则命中的标签与段落拆分。
+
+### `scripts/wipe`
+1. 未显式传入 `--execute` 时仅提示危险性并退出。
+2. 正式执行时初始化 Notion 客户端，调用 `clear_database(deep=...)` 归档数据库页面，可递归处理子页面。
+
+### `scripts/sync`
+1. 兼容旧入口：直接 `execv` 调用同目录下的 `pull`，参数保持不变。
+
+### `scripts/cron.sh`
+1. 切换到仓库根目录，按需加载 `.env`。
+2. 以干跑方式执行 `python3 scripts/pull` 并将日志追加到 `logs/sync.log`，常用于定时任务。
+
+---
+
 ## 环境配置
 下表列出最常用的环境变量，完整列表可参考 `src/config.py`：
 
@@ -72,7 +132,8 @@ TAPD 与 Notion 之间的需求数据库同步与分析工具，支持在 TAPD �
 | `TAPD_API_USER` / `TAPD_API_PASSWORD` | TAPD Basic Auth 凭证（二选一，可使用 `TAPD_TOKEN`） |
 | `TAPD_TOKEN` | 若使用 Token 鉴权，可填此项 |
 | `NOTION_TOKEN` | Notion Integration Token，必填 |
-| `NOTION_DATABASE_ID` | 目标 Notion 数据库 ID，必填 |
+| `NOTION_REQUIREMENT_DB_ID` | 需求数据同步目标 Notion 数据库 ID，必填 |
+| `NOTION_DEFECT_DB_ID` | 缺陷数据目标 Notion 数据库 ID，选填 |
 | `DEFAULT_OWNER` | 默认过滤的负责人，命令行可覆盖（默认为 “江林”） |
 | `TAPD_FETCH_TAGS` / `TAPD_FETCH_ATTACHMENTS` / `TAPD_FETCH_COMMENTS` | 是否在同步时拉取标签/附件/评论（默认开启） |
 | `TAPD_STORY_TAGS_PATH` / `TAPD_STORY_ATTACHMENTS_PATH` / `TAPD_STORY_COMMENTS_PATH` | 自定义 API 路径，兼容不同租户 |
@@ -80,7 +141,7 @@ TAPD 与 Notion 之间的需求数据库同步与分析工具，支持在 TAPD �
 | `CREATION_OWNER_SUBSTR` / `CREATION_REQUIRE_CURRENT_ITERATION` | 新建页面的安全限制，避免误创建 |
 | `TESTFLOW_*` 系列 | TestFlow 功能所需配置（输出目录、是否发送邮件等） |
 
-> `.env` 仅在本地使用，不会被纳入版本控制；上线或部署时可通过环境变量注入。
+> `.env` 仅在本地使用，不会被纳入版本控制；上线或部署时可通过环境变量注入。若遗留脚本仍使用 `NOTION_DATABASE_ID`，会自动回退到 `NOTION_REQUIREMENT_DB_ID`。
 
 ---
 

@@ -6,7 +6,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from story_utils import (
+from integrations.tapd.story_utils import (
     extract_story_attachments,
     extract_story_comments,
     extract_story_tags,

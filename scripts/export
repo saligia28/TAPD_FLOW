@@ -10,8 +10,8 @@ SRC = os.path.join(REPO, "src")
 if SRC not in sys.path:
     sys.path.insert(0, SRC)
 
-from config import load_config  # type: ignore
-from sync import run_export  # type: ignore
+from core.config import load_config  # type: ignore
+from services.sync import run_export  # type: ignore
 
 
 def main() -> None:
@@ -44,4 +44,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

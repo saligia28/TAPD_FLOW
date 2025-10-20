@@ -12,7 +12,7 @@ except Exception:  # pragma: no cover - optional in skeleton
 
 # Late import to avoid hard dependency in minimal flows
 try:
-    from mapper import (
+    from .mapper import (
         map_story_to_notion_properties,
         normalize_status,
         extract_status_label,
@@ -25,7 +25,7 @@ except Exception:
     def extract_status_label(_: Dict[str, Any]) -> str:  # type: ignore
         return ""
 
-from story_utils import (
+from ..tapd.story_utils import (
     extract_story_attachments,
     extract_story_comments,
     extract_story_tags,
