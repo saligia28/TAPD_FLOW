@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Dict, List
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard
-    from tapd_client import TAPDClient
+    from .client import TAPDClient
 
 
 def fetch_story_attachments(client: "TAPDClient", story_id: str) -> List[Dict[str, Any]]:

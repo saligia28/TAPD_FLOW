@@ -46,7 +46,8 @@ class Config:
     tapd_token: Optional[str] = None
 
     notion_token: Optional[str] = None
-    notion_database_id: Optional[str] = None
+    notion_requirement_db_id: Optional[str] = None
+    notion_defect_db_id: Optional[str] = None
 
     tz: str = os.getenv("TZ", "Asia/Shanghai")
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
@@ -126,7 +127,6 @@ class Config:
 REQUIRED_KEYS = [
     # For Notion writes; TAPD auth can be either Basic or AppKey/Secret
     "NOTION_TOKEN",
-    "NOTION_DATABASE_ID",
 ]
 
 
@@ -154,7 +154,8 @@ def load_config() -> Config:
 
         # Notion
         notion_token=os.getenv("NOTION_TOKEN"),
-        notion_database_id=os.getenv("NOTION_DATABASE_ID"),
+        notion_requirement_db_id=os.getenv("NOTION_REQUIREMENT_DB_ID") or os.getenv("NOTION_DATABASE_ID"),
+        notion_defect_db_id=os.getenv("NOTION_DEFECT_DB_ID"),
         # Multi-key compatibility for module filter
         tapd_filter_module_id_keys=_csv("TAPD_FILTER_MODULE_ID_KEYS", "module_id,category_id,moduleid"),
         tapd_filter_module_name_keys=_csv("TAPD_FILTER_MODULE_NAME_KEYS", "module,category,module_name"),
@@ -212,4 +213,6 @@ def validate_config(cfg: Config) -> list[str]:
     for k in REQUIRED_KEYS:
         if not env.get(k):
             missing.append(k)
+    if not (env.get("NOTION_REQUIREMENT_DB_ID") or env.get("NOTION_DATABASE_ID")):
+        missing.append("NOTION_REQUIREMENT_DB_ID")
     return missing

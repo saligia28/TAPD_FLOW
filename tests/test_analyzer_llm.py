@@ -8,7 +8,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from analyzer.llm import _build_prompt  # type: ignore
-from config import Config  # type: ignore
+from core.config import Config  # type: ignore
 
 
 def test_default_prompt_handles_json_braces() -> None:

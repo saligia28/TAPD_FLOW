@@ -10,7 +10,7 @@ DEFAULT_TIMEOUT = 8.0
 
 
 if TYPE_CHECKING:  # pragma: no cover - import for typing only
-    from sync import SyncResult, UpdateAllResult
+    from services.sync import SyncResult, UpdateAllResult
 
 
 def send_wecom_markdown(webhook_url: Optional[str], content: str, *, timeout: float = DEFAULT_TIMEOUT) -> bool:

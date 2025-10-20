@@ -15,9 +15,9 @@ if SRC not in sys.path:
     sys.path.insert(0, SRC)
 
 from _pipeline import NotificationDispatcher, StepRecord, format_failure_markdown, run_step  # type: ignore
-from config import load_config  # type: ignore
-from notifications import format_update_markdown, send_wecom_markdown  # type: ignore
-from sync import run_update, run_update_all, run_update_from_notion  # type: ignore
+from core.config import load_config  # type: ignore
+from services.notifications import format_update_markdown, send_wecom_markdown  # type: ignore
+from services.sync import run_update, run_update_all, run_update_from_notion  # type: ignore
 
 
 def parse_args() -> argparse.Namespace:

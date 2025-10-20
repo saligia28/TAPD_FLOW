@@ -14,7 +14,7 @@ SRC = os.path.join(REPO, "src")
 if SRC not in sys.path:
     sys.path.insert(0, SRC)
 
-from config import load_config  # type: ignore
+from core.config import load_config  # type: ignore
 from testflow import TestFlowOptions, run_testflow  # type: ignore
 
 
@@ -109,4 +109,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

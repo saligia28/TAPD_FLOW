@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from config import Config
-from tapd_client import TAPDClient
+from core.config import Config
+from integrations.tapd import TAPDClient
 
 from .exporter import export_suite_to_xmind
 from .llm import LLMGenerationError, build_fallback_cases, generate_test_cases

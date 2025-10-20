@@ -9,8 +9,8 @@ SRC = os.path.join(REPO, "src")
 if SRC not in sys.path:
     sys.path.insert(0, SRC)
 
-from config import load_config  # type: ignore
-from notion_wrapper import NotionWrapper  # type: ignore
+from core.config import load_config  # type: ignore
+from integrations.notion import NotionWrapper  # type: ignore
 
 
 def main() -> None:
@@ -23,11 +23,10 @@ def main() -> None:
     if not args.execute:
         print("[wipe] 干跑模式：未执行。若要实际清空，请追加 -e/--execute")
         return
-    notion = NotionWrapper(cfg.notion_token or "", cfg.notion_database_id or "")
+    notion = NotionWrapper(cfg.notion_token or "", cfg.notion_requirement_db_id or "")
     cleared = notion.clear_database(deep=args.deep)
     print(f"[wipe] cleared pages={cleared} | deep={args.deep}")
 
 
 if __name__ == "__main__":
     main()
-

@@ -5,7 +5,7 @@ from email.message import EmailMessage
 from pathlib import Path
 from typing import List
 
-from config import Config
+from core.config import Config
 
 from .models import MailJob, MailResult
 

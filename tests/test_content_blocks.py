@@ -6,7 +6,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from content import build_page_blocks_from_story  # type: ignore
+from integrations.notion.content import build_page_blocks_from_story  # type: ignore
 
 
 def _rich_text(block):

@@ -1,6 +1,6 @@
 import pytest
 
-from mapper import extract_status_label, map_story_to_notion_properties, normalize_status
+from integrations.notion.mapper import extract_status_label, map_story_to_notion_properties, normalize_status
 
 
 def test_normalize_status_numeric_suffix_with_underscore() -> None:

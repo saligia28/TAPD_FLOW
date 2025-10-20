@@ -6,7 +6,7 @@ from typing import Dict, Optional
 
 import requests
 
-from config import Config
+from core.config import Config
 
 
 class LLMNotConfigured(RuntimeError):

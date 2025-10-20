@@ -9,7 +9,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-import notion_wrapper  # type: ignore  # noqa: E402
+from integrations.notion import client as notion_client  # type: ignore  # noqa: E402
 
 
 class _DummyPages:
@@ -54,8 +54,8 @@ class _DummyClient:
 
 @pytest.fixture()
 def dummy_wrapper(monkeypatch):
-    monkeypatch.setattr(notion_wrapper, "Client", lambda **kwargs: _DummyClient())
-    wrapper = notion_wrapper.NotionWrapper(token="token", database_id="db")
+    monkeypatch.setattr(notion_client, "Client", lambda **kwargs: _DummyClient())
+    wrapper = notion_client.NotionWrapper(token="token", database_id="db")
     # Configure schema detection manually for predictable behavior
     wrapper._title_prop = "Name"  # type: ignore[attr-defined]
     wrapper._tag_prop = "标签"  # type: ignore[attr-defined]
@@ -68,8 +68,8 @@ def dummy_wrapper(monkeypatch):
 
 
 def test_apply_extended_story_properties_enriches_payload(monkeypatch):
-    monkeypatch.setattr(notion_wrapper, "Client", None)
-    wrapper = notion_wrapper.NotionWrapper(token="", database_id="")
+    monkeypatch.setattr(notion_client, "Client", None)
+    wrapper = notion_client.NotionWrapper(token="", database_id="")
     wrapper._tag_prop = "标签"  # type: ignore[attr-defined]
     wrapper._tag_prop_type = "multi_select"  # type: ignore[attr-defined]
     wrapper._attachment_prop = "附件"  # type: ignore[attr-defined]

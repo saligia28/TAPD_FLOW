@@ -8,7 +8,7 @@ import random
 import requests
 from requests import exceptions as req_exc
 
-from tapd_extras_fetchers import fetch_story_attachments, fetch_story_comments
+from .extras import fetch_story_attachments, fetch_story_comments
 
 class TAPDClient:
     """Minimal TAPD API client.
