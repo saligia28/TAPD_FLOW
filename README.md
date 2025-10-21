@@ -134,7 +134,7 @@ TAPD 与 Notion 之间的需求数据库同步与分析工具，支持在 TAPD �
 | `NOTION_TOKEN` | Notion Integration Token，必填 |
 | `NOTION_REQUIREMENT_DB_ID` | 需求数据同步目标 Notion 数据库 ID，必填 |
 | `NOTION_DEFECT_DB_ID` | 缺陷数据目标 Notion 数据库 ID，选填 |
-| `DEFAULT_OWNER` | 默认过滤的负责人，命令行可覆盖（默认为 “江林”） |
+| `DEFAULT_OWNER` | 默认过滤的负责人，命令行可覆盖 |
 | `TAPD_FETCH_TAGS` / `TAPD_FETCH_ATTACHMENTS` / `TAPD_FETCH_COMMENTS` | 是否在同步时拉取标签/附件/评论（默认开启） |
 | `TAPD_STORY_TAGS_PATH` / `TAPD_STORY_ATTACHMENTS_PATH` / `TAPD_STORY_COMMENTS_PATH` | 自定义 API 路径，兼容不同租户 |
 | `TAPD_USE_CURRENT_ITERATION` | 默认限制为当前迭代 |
