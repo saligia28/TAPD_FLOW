@@ -54,3 +54,18 @@ def test_build_page_blocks_includes_extras_sections():
     assert any("接口" in item for item in list_items)
     assert any("https://example.com/proto" in item for item in list_items)
     assert any("Bob" in item and "LGTM" in item for item in list_items)
+
+
+def test_build_page_blocks_can_skip_analysis_sections():
+    story = {
+        "id": "tapd-2",
+        "description": "功能描述 A\n验收标准 B",
+    }
+    blocks = build_page_blocks_from_story(story, include_analysis=False)
+    headings = {
+        _rich_text(block)
+        for block in blocks
+        if block.get("type") in {"heading_2", "heading_3"}
+    }
+    assert "内容分析" not in headings
+    assert "需求点" not in headings

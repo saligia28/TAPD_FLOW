@@ -146,3 +146,31 @@ def test_run_sync_with_explicit_story_ids(patched_state, monkeypatch, tmp_path):
     assert dummy_tapd.get_story_calls == ["789"]
     assert dummy_notion.upserts == []
     assert dummy_notion.created == ["789"]
+
+
+def test_run_update_respects_analysis_flag(monkeypatch):
+    dummy_tapd = DummyTapd()
+    dummy_notion = DummyNotion()
+    captured_flags: list[bool] = []
+
+    def fake_build(story, *, cfg=None, include_analysis=True):
+        captured_flags.append(include_analysis)
+        return []
+
+    monkeypatch.setattr(sync, "TAPDClient", lambda *args, **kwargs: dummy_tapd)
+    monkeypatch.setattr(sync, "NotionWrapper", lambda *args, **kwargs: dummy_notion)
+    monkeypatch.setattr(sync, "map_story_to_notion_properties", lambda story: {"Name": story.get("name", "")})
+    monkeypatch.setattr(sync, "build_page_blocks_from_story", fake_build)
+
+    cfg = Config()
+    cfg.notion_token = "token"
+    cfg.notion_requirement_db_id = "db"
+    cfg.tapd_fetch_tags = False
+    cfg.tapd_fetch_attachments = False
+    cfg.tapd_fetch_comments = False
+    cfg.tapd_track_existing_ids = False
+
+    sync.run_update(cfg, ["123"], dry_run=True)
+    sync.run_update(cfg, ["123"], dry_run=True, re_analyze=True)
+
+    assert captured_flags == [False, True]

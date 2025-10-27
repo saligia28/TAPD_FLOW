@@ -380,6 +380,7 @@ def run_update(
     *,
     dry_run: bool = True,
     create_missing: bool = False,
+    re_analyze: bool = False,
 ) -> None:
     """Manually update pages by TAPD story IDs.
 
@@ -430,10 +431,12 @@ def run_update(
         enrich_story_with_extras(tapd, cfg, story, cache=extras_cache, ctx="update")
 
         # Build blocks with latest analyzers
-        text = story.get("description") or ""
-        res_an = analyze(text)
         props = map_story_to_notion_properties(story)
-        blocks = build_page_blocks_from_story(story, cfg=cfg)
+        blocks = build_page_blocks_from_story(
+            story,
+            cfg=cfg,
+            include_analysis=re_analyze,
+        )
 
         try:
             page_id = notion.find_page_by_tapd_id(sid, suppress_errors=False)
@@ -497,6 +500,7 @@ def run_update_all(
     owner: Optional[str] = None,
     creator: Optional[str] = None,
     current_iteration: bool = False,
+    re_analyze: bool = False,
 ) -> UpdateAllResult:
     """Update-only pipeline over TAPD stories.
 
@@ -577,10 +581,12 @@ def run_update_all(
         if not tapd_id:
             continue
         enrich_story_with_extras(tapd, cfg, story, cache=extras_cache, ctx="update-all")
-        text = story.get("description") or ""
-        res_an = analyze(text)
         props = map_story_to_notion_properties(story)
-        blocks = build_page_blocks_from_story(story, cfg=cfg)
+        blocks = build_page_blocks_from_story(
+            story,
+            cfg=cfg,
+            include_analysis=re_analyze,
+        )
         # Update-only: try match by TAPD_ID or title (compute blocks first for update path)
         if dry_run:
             page_id = notion.find_page_by_tapd_id(tapd_id) or notion.find_page_by_title(story.get('name') or story.get('title') or '')
@@ -622,6 +628,7 @@ def run_update_from_notion(
     *,
     dry_run: bool = True,
     limit: Optional[int] = None,
+    re_analyze: bool = False,
 ) -> None:
     """Update pages by traversing existing Notion records (safer, no creations).
 
@@ -664,10 +671,12 @@ def run_update_from_notion(
         story = unwrap_story_payload(res) or {}
         story.setdefault("id", sid)
         enrich_story_with_extras(tapd, cfg, story, cache=extras_cache, ctx="update-from-notion")
-        text = story.get("description") or ""
-        res_an = analyze(text)
         props = map_story_to_notion_properties(story)
-        blocks = build_page_blocks_from_story(story, cfg=cfg)
+        blocks = build_page_blocks_from_story(
+            story,
+            cfg=cfg,
+            include_analysis=re_analyze,
+        )
         if dry_run:
             print(f"[update-from-notion] would update id={sid} title={props.get('Name')}")
             updated += 1

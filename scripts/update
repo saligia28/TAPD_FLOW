@@ -38,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("-o", "--owner", default=os.getenv("DEFAULT_OWNER", "江林"), help="负责人筛选（update-all 时生效）")
     p.add_argument("-c", "--creator", default=None, help="创建人筛选（update-all 时生效）")
     p.add_argument("-t", "--current-iteration", action="store_true", help="仅当前迭代（默认开启）")
+    p.add_argument("-a", "--analyze", action="store_true", help="更新时重新分析需求内容（默认跳过）")
     return p.parse_args()
 
 
@@ -94,6 +95,7 @@ def main() -> None:
                         ids,
                         dry_run=(not args.execute),
                         create_missing=bool(args.create_missing),
+                        re_analyze=bool(args.analyze),
                     ),
                 )
                 records.append(record)
@@ -108,6 +110,7 @@ def main() -> None:
                     cfg,
                     dry_run=(not args.execute),
                     limit=args.limit,
+                    re_analyze=bool(args.analyze),
                 ),
             )
             records.append(record)
@@ -124,6 +127,7 @@ def main() -> None:
                     owner=owner,
                     creator=args.creator,
                     current_iteration=bool(current_iter),
+                    re_analyze=bool(args.analyze),
                 ),
             )
             records.append(record)

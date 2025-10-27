@@ -100,6 +100,12 @@ ACTIONS: Dict[str, ActionDefinition] = {
                 args=("--create-missing",),
                 description="在按 ID 更新时，缺失页面将自动创建。",
             ),
+            ActionOption(
+                id="analyze",
+                label="--analyze",
+                args=("--analyze",),
+                description="更新时重新分析需求内容（默认跳过）。",
+            ),
         ),
         hint="默认更新当前迭代；想要 dry-run 可去掉 --execute。",
     ),
