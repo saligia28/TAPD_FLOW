@@ -34,32 +34,43 @@ TAPD 与 Notion 之间的需求数据库同步与分析工具，支持在 TAPD �
    ```bash
    python3 scripts/pull
    ```
-4. **实际写入 Notion**
+4. **实际写入 Notion（需显式确认）**
    ```bash
-   python3 scripts/pull -e
+   python3 scripts/pull -e --ack "我已知悉：拉取是严重危险操作" --owner 江林 --current-iteration
    ```
-   默认会在成功写入后自动跟进一次 `update-all`；可通过 `-P` 禁用自动更新。
+   默认范围为 `--owner 江林 --current-iteration`，如需覆盖请显式传参。成功写入后会自动触发一次 `update-all`；可通过 `-P` 禁用自动更新。
 5. **常用命令**
    ```bash
    # 更新既有页面（按 TAPD_ID 匹配，不创建新页面）
-   python3 scripts/update -e
+   python3 scripts/update -e --ack "我已知悉：更新是中度危险操作"
 
    # 按需求 ID 明确更新（缺失时可创建）：-C 表示允许创建
-   python3 scripts/update -i 123456,123457 -e -C
+   python3 scripts/update -i 123456,123457 -e -C --ack "我已知悉：更新是中度危险操作"
 
    # 仅新增（已存在的页面不更新）
-   python3 scripts/pull -n -e
+   python3 scripts/pull -n -e --ack "我已知悉：拉取是严重危险操作"
 
    # 导出当前 Notion 数据库到 JSON
    python3 scripts/export -l 100 -O data/export.json
 
    # 按模块逐个同步（适合大规模初始化）
-   python3 scripts/pull -m -e
+   python3 scripts/pull -m -e --ack "我已知悉：拉取是严重危险操作"
 
    # 生成测试流附件（需按提示确认 ack）
    python3 scripts/testflow --limit 5 --execute --ack "我已知悉：拉取是严重危险操作"
    ```
    所有命令均支持 `-h/--help` 查看完整参数。
+   亦可通过 `make pull ARGS="-e --ack \"我已知悉：拉取是严重危险操作\""` 触发带确认的拉取。
+
+---
+
+## 安全约束与默认参数
+- **默认范围**：同步命令默认使用 `--owner 江林 --current-iteration`，避免误同步其他迭代数据；若需修改必须明确传参并在变更前确认风险。
+- **危险操作确认**：所有写入操作必须追加 `--ack`。
+  - 拉取/创建：`--ack "我已知悉：拉取是严重危险操作"`
+  - 更新：`--ack "我已知悉：更新是中度危险操作"`
+- **写入后的跟进**：成功执行带写入的 `pull` 后，应立即对同一范围运行 `python3 scripts/update -e --ack "我已知悉：更新是中度危险操作"`，确保 Notion 状态与 TAPD 保持一致。
+- **Makefile 包装**：可使用 `make pull ARGS="-e --ack '我已知悉：拉取是严重危险操作'"` 或 `make update ARGS="-e --ack '我已知悉：更新是中度危险操作'"`，Makefile 会沿用默认范围；自定义范围时请同步更新命令参数。
 
 ---
 
@@ -70,7 +81,7 @@ TAPD 与 Notion 之间的需求数据库同步与分析工具，支持在 TAPD �
 2. 根据 `--full/--since/--owner/--story-ids` 等旗标确定同步范围，自动补充“当前迭代”安全限制。
 3. 选择执行 `run_sync` 或 `run_sync_by_modules`：后者会为每个模块拼装过滤条件并逐批处理。
 4. 对匹配的需求执行标准流水线：经由 TAPD API 拉取详情 → `enrich_story_with_extras` 补齐标签/附件/评论 → `analyze` 产出分析 → 构建 Notion 属性和内容块。
-5. 按 `--execute/--insert-only/--wipe-first` 等选项决定创建、更新或跳过页面；dry-run 模式仅输出计划操作。
+5. 按 `--execute/--insert-only/--wipe-first` 等选项决定创建、更新或跳过页面；dry-run 模式仅输出计划操作，执行模式需附加 `--ack "我已知悉：拉取是严重危险操作"` 完成安全确认。
 6. 实际写入时同步跟踪状态（`data/state.json`）并可将成功/失败摘要投递到企业微信。
 7. 默认在成功写入后追加一次 `run_update_all` 作为兜底刷新；可通过 `-P/--no-post-update` 禁用。
 
@@ -79,7 +90,7 @@ TAPD 与 Notion 之间的需求数据库同步与分析工具，支持在 TAPD �
 2. `update-by-ids`：按 ID 调用 TAPD `get_story`，补齐扩展字段，更新 Notion 页面；`--create-missing` 可在缺页时创建。
 3. `update-from-notion`：先读取 Notion 索引，再回源 TAPD 完整刷新，完全不创建新页面。
 4. `update-all`：遍历 TAPD 列表，受负责人/迭代过滤，只对已存在的 Notion 页面执行更新。
-5. Dry-run 输出计划动作；执行模式会记录摘要并通过通知调度器推送成功或失败告警。
+5. Dry-run 输出计划动作；执行模式会记录摘要并通过通知调度器推送成功或失败告警，执行时请加上 `--ack "我已知悉：更新是中度危险操作"`。
 
 ### `scripts/export`
 1. 加载配置后构建 TAPD 与 Notion 客户端。
@@ -148,40 +159,63 @@ TAPD 与 Notion 之间的需求数据库同步与分析工具，支持在 TAPD �
 ## 项目结构
 ```
 .
-├── README.md                 # 当前文档
+├── README.md                     # 当前文档
 ├── src/
-│   ├── cli.py               # CLI 入口（同步、更新、导出等）
-│   ├── sync.py              # TAPD ↔ Notion 主同步逻辑
-│   ├── tapd_client.py       # TAPD API 封装（含附件/评论/标签抓取）
-│   ├── notion_wrapper.py    # Notion API 封装及属性映射
-│   ├── mapper.py            # 字段映射与状态解析
-│   ├── content.py           # 页面正文构建（描述、分析、功能点、附件列表等）
-│   ├── analyzer/            # 分析模块（规则 & LLM）
-│   ├── testflow/            # 测试用例生成与附件导出
-│   └── state/               # 状态持久化（last_sync、跟踪 ID）
-├── scripts/                 # 命令封装（pull/update/export/testflow 等）
-├── tests/                   # Pytest 单元/集成测试
-├── data/                    # 运行期数据与缓存（忽略提交）
-└── docs/                    # TAPD 官方接口文档镜像
+│   ├── cli.py                   # CLI 入口（脚本统一调度）
+│   ├── server.py                # FastAPI 入口（保留旧路径兼容）
+│   ├── analyzer/                # 内容分析器（规则 / LLM / 图像）
+│   ├── app/
+│   │   ├── cli.py               # Typer CLI，封装 sync/update/testflow 子命令
+│   │   └── server/              # FastAPI 应用与后台任务
+│   │       ├── app.py
+│   │       ├── actions.py
+│   │       ├── jobs.py
+│   │       └── schemas.py
+│   ├── core/                    # 配置加载与状态持久化
+│   │   ├── config.py
+│   │   └── state/
+│   │       └── store.py         # data/state.json 读写与增量游标
+│   ├── integrations/            # 外部系统适配层
+│   │   ├── tapd/
+│   │   │   ├── client.py        # TAPD OpenAPI 封装与请求调度
+│   │   │   ├── extras.py        # 附件 / 评论 / 标签补齐
+│   │   │   └── story_utils.py   # 需求字段清洗与派生属性
+│   │   └── notion/
+│   │       ├── client.py        # Notion SDK 包装（重试、批量操作）
+│   │       ├── content.py       # 页面正文块构建
+│   │       └── mapper.py        # TAPD → Notion 属性映射
+│   ├── services/
+│   │   ├── notifications.py     # 企业微信 / 邮件通知封装
+│   │   └── sync/
+│   │       ├── service.py       # TAPD ↔ Notion 主同步管道
+│   │       ├── frontend.py      # CLI/服务器复用的高层入口
+│   │       ├── results.py       # 同步统计与报告模型
+│   │       └── utils.py
+│   └── testflow/                # 测试流生成、导出与邮件发送
+├── scripts/                     # 命令封装（pull/update/export/testflow 等）
+├── tests/                       # Pytest 单元 / 集成测试
+├── data/                        # 运行期数据与缓存（state.json、export 等）
+├── logs/                        # 同步 / 执行日志
+└── docs/                        # TAPD 接口文档与设计说明
 ```
 
 ---
 
 ## 同步流程概览
 ```
-┌──────────────┐    stories + extras    ┌────────────┐
-│ TAPD OpenAPI │ ─────────────────────► │ sync.py    │
-└──────────────┘                        │            │
-        ▲                               │  map/merge │
-        │        increment / id cache   │            │
-        │  ┌─────────────────────────── │            │
-        │  │                            └────┬───────┘
+┌──────────────┐    stories + extras    ┌──────────────────────────┐
+│ TAPD OpenAPI │ ─────────────────────► │ services/sync/service.py │
+└──────────────┘                        │                          │
+        ▲                               │  map/merge               │
+        │        increment / id cache   │                          │
+        │  ┌─────────────────────────── │                          │
+        │  │                            └────┬─────────────────────┘
         │  │                                 │
         │  │                           Notion SDK
         │  │                                 │
-┌───────┴──┴───────┐                  ┌──────▼───────┐
-│ state/store.py   │◄─ track ids ─────│ Notion DB    │
-└──────────────────┘                  └──────────────┘
+┌───────┴──┴───────────┐              ┌──────▼───────┐
+│ core/state/store.py  │◄─ track ids ─│ Notion DB    │
+└──────────────────────┘              └──────────────┘
 ```
 - 按更新时间或指定 ID 拉取需求；
 - 补齐标签、附件、评论等扩展字段；
