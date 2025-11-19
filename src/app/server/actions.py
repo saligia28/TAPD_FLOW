@@ -24,7 +24,7 @@ ACTIONS: Dict[str, ActionDefinition] = {
                 id="owner",
                 label="--owner 前端",
                 args=("--owner", "前端"),
-                description="仅同步负责人包含“前端”的需求。",
+                description="仅同步负责人包含\"前端\"的需求。",
             ),
             ActionOption(
                 id="current-iteration",
@@ -39,6 +39,13 @@ ACTIONS: Dict[str, ActionDefinition] = {
                 args=("--execute",),
                 description="实际写入 Notion（默认 dry-run）。",
                 default_selected=True,
+            ),
+            ActionOption(
+                id="progress",
+                label="--progress",
+                args=("--progress",),
+                description="显示详细的阶段进度日志（fetch→analyze→notion）。",
+                default_selected=False,
             ),
             ActionOption(
                 id="modules",

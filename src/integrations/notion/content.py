@@ -298,6 +298,7 @@ def build_page_blocks_from_story(
     story: Dict[str, Any],
     *,
     cfg: Optional["Config"] = None,
+    include_analysis: bool = True,
 ) -> List[Dict[str, Any]]:
     """Aggregate a story's content and render as Notion blocks.
 
@@ -398,14 +399,20 @@ def build_page_blocks_from_story(
             })
 
     # Analysis on cleaned description text
-    from analyzer import run_analysis as _run_analysis  # local import to avoid cycle
-    desc_for_nlp = html_to_text(desc_raw) if _str_has_html(desc_raw) else desc_raw
-    res = _run_analysis(desc_for_nlp or "", cfg=cfg, story=story)
-    analysis = res.get("analysis", {}) if isinstance(res, dict) else {}
-    feature_points = res.get("feature_points", []) if isinstance(res, dict) else []
-    ai_insights = res.get("ai_insights") if isinstance(res, dict) else None
-    ai_test_points = res.get("ai_test_points") if isinstance(res, dict) else []
-    ai_error = res.get("ai_error") if isinstance(res, dict) else None
+    analysis: Dict[str, Any] = {}
+    feature_points: List[Any] = []
+    ai_insights: Optional[Dict[str, Any]] = None
+    ai_test_points: List[Any] = []
+    ai_error: Optional[str] = None
+    if include_analysis:
+        from analyzer import run_analysis as _run_analysis  # local import to avoid cycle
+        desc_for_nlp = html_to_text(desc_raw) if _str_has_html(desc_raw) else desc_raw
+        res = _run_analysis(desc_for_nlp or "", cfg=cfg, story=story)
+        analysis = res.get("analysis", {}) if isinstance(res, dict) else {}
+        feature_points = res.get("feature_points", []) if isinstance(res, dict) else []
+        ai_insights = res.get("ai_insights") if isinstance(res, dict) else None
+        ai_test_points = res.get("ai_test_points") if isinstance(res, dict) else []
+        ai_error = res.get("ai_error") if isinstance(res, dict) else None
 
     if analysis:
         blocks.append({"type": "heading_2", "heading_2": {"rich_text": [{"text": {"content": "内容分析"}}]}})

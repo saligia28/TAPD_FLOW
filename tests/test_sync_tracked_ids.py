@@ -83,7 +83,6 @@ def test_run_sync_refreshes_tracked_story(patched_state, monkeypatch, tmp_path):
     monkeypatch.setattr(sync, "NotionWrapper", lambda *args, **kwargs: dummy_notion)
     monkeypatch.setattr(sync, "map_story_to_notion_properties", lambda story: {"Name": story.get("name", "")})
     monkeypatch.setattr(sync, "build_page_blocks_from_story", lambda story, **_: [])
-    monkeypatch.setattr(sync, "analyze", lambda text: {})
 
     cfg = Config()
     cfg.notion_token = "token"
@@ -126,7 +125,6 @@ def test_run_sync_with_explicit_story_ids(patched_state, monkeypatch, tmp_path):
     monkeypatch.setattr(sync, "NotionWrapper", lambda *args, **kwargs: dummy_notion)
     monkeypatch.setattr(sync, "map_story_to_notion_properties", lambda story: {"Name": story.get("name", "")})
     monkeypatch.setattr(sync, "build_page_blocks_from_story", lambda story, **_: [])
-    monkeypatch.setattr(sync, "analyze", lambda text: {})
 
     store.save_state({"tracked_story_ids": []})
 

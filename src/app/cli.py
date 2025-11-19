@@ -22,6 +22,7 @@ def parse_args() -> argparse.Namespace:
     p_sync.add_argument("--wipe-first", action="store_true", help="写入前清空 Notion 数据库（归档旧记录）并全量重建")
     p_sync.add_argument("--insert-only", action="store_true", help="仅新增 Notion 中不存在的需求（按 TAPD_ID 判断），已存在的不更新")
     p_sync.add_argument("--current-iteration", action="store_true", help="仅同步当前迭代的需求")
+    p_sync.add_argument("--progress", action="store_true", help="输出详细的阶段进度日志（fetch→analyze→notion）")
     # Risk ack removed; writes are allowed when --execute is used
 
     p_an = sub.add_parser("analyze", help="仅进行内容分析，不写 Notion（演示）")
@@ -47,17 +48,20 @@ def parse_args() -> argparse.Namespace:
     p_upd.add_argument("--file", default=None, help="从文件读取需求 ID（每行一个）")
     p_upd.add_argument("--execute", action="store_true", help="实际更新（默认 dry-run）")
     p_upd.add_argument("--create-missing", action="store_true", help="如 Notion 中不存在对应页面则创建新页面")
+    p_upd.add_argument("--analyze", action="store_true", help="是否重新分析需求内容（默认不分析）")
 
     p_upda = sub.add_parser("update-all", help="批量更新（只更新，若 Notion 无对应页则跳过）")
     p_upda.add_argument("--owner", default=None, help="仅更新负责人包含该关键字（可逗号分隔多个）")
     p_upda.add_argument("--creator", default=None, help="仅更新该创建人（显示名）")
     p_upda.add_argument("--current-iteration", action="store_true", help="仅当前迭代")
     p_upda.add_argument("--execute", action="store_true", help="实际更新（默认 dry-run）")
+    p_upda.add_argument("--analyze", action="store_true", help="是否重新分析需求内容（默认不分析）")
     # Risk ack removed
 
     p_updn = sub.add_parser("update-from-notion", help="从 Notion 现有页面出发按 TAPD_ID 逐条更新（只更新）")
     p_updn.add_argument("--limit", type=int, default=None, help="最多更新多少条（默认全部）")
     p_updn.add_argument("--execute", action="store_true", help="实际更新（默认 dry-run）")
+    p_updn.add_argument("--analyze", action="store_true", help="是否重新分析需求内容（默认不分析）")
     # Risk ack removed
 
     p_exp = sub.add_parser("export", help="导出 Notion 中已处理的需求数据（MCP 契约 JSON）")
@@ -102,6 +106,7 @@ def main() -> None:
                 wipe_first=args.wipe_first,
                 insert_only=args.insert_only,
                 current_iteration=args.current_iteration,
+                progress=args.progress,
             )
         else:
             run_sync(
@@ -114,6 +119,7 @@ def main() -> None:
                 wipe_first=args.wipe_first,
                 insert_only=args.insert_only,
                 current_iteration=args.current_iteration,
+                progress=args.progress,
             )
     elif args.cmd == "analyze":
         from analyzer.rule_based import analyze
@@ -209,7 +215,13 @@ def main() -> None:
             print("[update] 未提供任何需求 ID；请使用 --ids 或 --id 或 --file")
             return
         from services.sync import run_update
-        run_update(cfg, ids, dry_run=(not args.execute), create_missing=args.create_missing)
+        run_update(
+            cfg,
+            ids,
+            dry_run=(not args.execute),
+            create_missing=args.create_missing,
+            re_analyze=args.analyze,
+        )
     elif args.cmd == "update-all":
         cfg = load_config()
         # No write guards / acks
@@ -220,12 +232,18 @@ def main() -> None:
             owner=args.owner,
             creator=args.creator,
             current_iteration=args.current_iteration,
+            re_analyze=args.analyze,
         )
     elif args.cmd == "update-from-notion":
         cfg = load_config()
         # No write guards / acks
         from services.sync import run_update_from_notion
-        run_update_from_notion(cfg, dry_run=(not args.execute), limit=args.limit)
+        run_update_from_notion(
+            cfg,
+            dry_run=(not args.execute),
+            limit=args.limit,
+            re_analyze=args.analyze,
+        )
     elif args.cmd == "testflow":
         cfg = load_config()
         options = TestFlowOptions(

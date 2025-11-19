@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+import time
 from typing import Any, Dict, Optional
 
 from core.config import Config
@@ -11,7 +13,87 @@ __all__ = [
     "story_tapd_id",
     "enrich_story_with_extras",
     "unwrap_story_payload",
+    "ProgressReporter",
 ]
+
+
+class ProgressReporter:
+    """Lightweight progress logger for sync operations.
+
+    Only outputs when enabled=True to avoid noise in default mode.
+    Provides stage-based logging for fetch, analyze, and notion phases.
+    """
+
+    def __init__(self, enabled: bool = False):
+        self.enabled = enabled
+        self._stage_start_time: Optional[float] = None
+        self._stage_name: Optional[str] = None
+
+    def stage(
+        self,
+        name: str,
+        idx: Optional[int] = None,
+        total: Optional[int] = None,
+        tapd_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> None:
+        """Log progress for a specific stage.
+
+        Args:
+            name: Stage name (e.g., 'fetch', 'analyze', 'notion')
+            idx: Current item index (1-based)
+            total: Total items count (if known)
+            tapd_id: Story ID being processed
+            **kwargs: Additional context to include in log
+        """
+        if not self.enabled:
+            return
+
+        parts = [f"stage={name}"]
+
+        if idx is not None:
+            if total is not None:
+                parts.append(f"idx={idx}/{total}")
+            else:
+                parts.append(f"idx={idx}")
+
+        if tapd_id:
+            parts.append(f"tapd_id={tapd_id}")
+
+        for key, value in kwargs.items():
+            if value is not None:
+                parts.append(f"{key}={value}")
+
+        print(f"[sync] progress {' '.join(parts)}")
+        sys.stdout.flush()
+
+    def stage_start(self, name: str, **kwargs: Any) -> None:
+        """Mark the start of a stage."""
+        if not self.enabled:
+            return
+        self._stage_name = name
+        self._stage_start_time = time.time()
+        self.stage(name, action="start", **kwargs)
+
+    def stage_end(self, name: Optional[str] = None, **kwargs: Any) -> None:
+        """Mark the end of a stage and log duration."""
+        if not self.enabled:
+            return
+        stage_name = name or self._stage_name
+        if not stage_name:
+            return
+
+        duration = None
+        if self._stage_start_time is not None:
+            duration = time.time() - self._stage_start_time
+            self._stage_start_time = None
+
+        if duration is not None:
+            self.stage(stage_name, action="end", duration_s=f"{duration:.2f}", **kwargs)
+        else:
+            self.stage(stage_name, action="end", **kwargs)
+
+        self._stage_name = None
 
 
 def story_tapd_id(story: Dict[str, Any]) -> str:

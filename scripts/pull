@@ -51,6 +51,8 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="按 TAPD 需求 ID 列表拉取，逗号分隔；提供该参数时忽略负责人筛选",
     )
+    p.add_argument("-a", "--analyze", action="store_true", help="后续更新时是否重新分析需求内容（默认不分析）")
+    p.add_argument("--progress", action="store_true", help="输出详细的阶段进度日志（fetch→analyze→notion）")
     return p.parse_args()
 
 
@@ -87,6 +89,7 @@ def main() -> None:
                 wipe_first=bool(args.wipe_first),
                 insert_only=bool(args.insert_only),
                 current_iteration=bool(current_iter),
+                progress=bool(args.progress),
             )
             sync_label = "sync-by-modules"
         else:
@@ -101,6 +104,7 @@ def main() -> None:
                 insert_only=bool(args.insert_only),
                 current_iteration=bool(current_iter),
                 story_ids=story_ids,
+                progress=bool(args.progress),
             )
             sync_label = "sync"
 
@@ -135,6 +139,7 @@ def main() -> None:
                 owner=owner,
                 creator=args.creator,
                 current_iteration=bool(current_iter),
+                re_analyze=bool(args.analyze),
             )
             update_result, upd_record = run_step("update-all", update_callable)
             records.append(upd_record)

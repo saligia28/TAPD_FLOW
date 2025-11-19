@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import queue
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -82,6 +83,7 @@ class NotificationDispatcher:
 def run_step(name: str, func: Callable[[], T]) -> Tuple[Optional[T], StepRecord]:
     start = time.time()
     print(f"[pipeline] ➤ 开始步骤：{name}")
+    sys.stdout.flush()
     try:
         result = func()
     except KeyboardInterrupt:
@@ -90,9 +92,11 @@ def run_step(name: str, func: Callable[[], T]) -> Tuple[Optional[T], StepRecord]
         duration = time.time() - start
         message = str(exc)
         print(f"[pipeline] ✖ 步骤失败：{name}（{duration:.2f}s）原因：{message}")
+        sys.stdout.flush()
         return None, StepRecord(name=name, success=False, duration=duration, message=message)
     duration = time.time() - start
     print(f"[pipeline] ✓ 步骤完成：{name}（{duration:.2f}s）")
+    sys.stdout.flush()
     return result, StepRecord(name=name, success=True, duration=duration)
 
 

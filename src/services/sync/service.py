@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import sys
 import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
 
-from analyzer.rule_based import analyze
 from core.config import Config
 from core.state import store
 from integrations.notion import (
@@ -18,6 +18,7 @@ from services.sync.utils import (
     enrich_story_with_extras,
     story_tapd_id,
     unwrap_story_payload,
+    ProgressReporter,
 )
 from testflow.service import generate_testflow_for_stories
 
@@ -33,12 +34,17 @@ def run_sync(
     insert_only: bool = False,
     current_iteration: bool = False,
     story_ids: Optional[Sequence[str]] = None,
+    progress: bool = False,
 ) -> SyncResult:
     start_ts = time.perf_counter()
     last = None if full else (since or store.get_last_sync_at())
     focus_ids = [str(s).strip() for s in (story_ids or []) if str(s).strip()]
     restrict_to_ids = bool(focus_ids)
     focus_count = len(focus_ids) if restrict_to_ids else 0
+
+    # Initialize progress reporter
+    reporter = ProgressReporter(enabled=progress)
+
     print(
         f"[sync] start | full={full} | since={last} | wipe_first={wipe_first} | "
         f"insert_only={insert_only} | story_ids={focus_count}"
@@ -178,6 +184,7 @@ def run_sync(
             print(f"[sync] insert-only: existing TAPD_ID count={len(existing_idx)}")
 
     # Strict pipeline: 1) fetch all stories 2) analyze/normalize 3) write to Notion
+    reporter.stage_start("fetch", total=focus_count if restrict_to_ids else None)
     all_stories: List[dict] = []
     notion_candidates: List[dict] = []
     notion_seen: Set[str] = set()
@@ -185,25 +192,39 @@ def run_sync(
     def iterate_source_stories() -> Iterable[dict]:
         if restrict_to_ids:
             seen_targets: Set[str] = set()
+            total = len(focus_ids)
+            idx = 0
             for sid in focus_ids:
                 if not sid or sid in seen_targets:
                     continue
                 seen_targets.add(sid)
+                idx += 1
                 try:
                     res = tapd.get_story(sid)
+                    story = unwrap_story_payload(res)
+                    if not isinstance(story, dict):
+                        print(f"[sync] unexpected payload when fetching id={sid}")
+                        sys.stdout.flush()
+                        continue
+                    story.setdefault("id", sid)
+                    print(f"[sync] fetched id={sid} ({idx}/{total})")
+                    sys.stdout.flush()
+                    reporter.stage("fetch", idx=idx, total=total, tapd_id=sid)
+                    yield story
                 except Exception as exc:
-                    print(f"[sync] fetch by id failed id={sid}: {exc}")
+                    print(f"[sync] fetch by id failed id={sid} ({idx}/{total}): {exc}")
+                    sys.stdout.flush()
                     continue
-                story = unwrap_story_payload(res)
-                if not isinstance(story, dict):
-                    print(f"[sync] unexpected payload when fetching id={sid}")
-                    continue
-                story.setdefault("id", sid)
-                yield story
         else:
+            fetched_count = 0
             for raw in tapd.list_stories(updated_since=last, filters=filters or None):
                 story = unwrap_story_payload(raw) or raw
                 if isinstance(story, dict):
+                    fetched_count += 1
+                    sid = story_tapd_id(story)
+                    print(f"[sync] fetched story id={sid} (count={fetched_count})")
+                    sys.stdout.flush()
+                    reporter.stage("fetch", idx=fetched_count, tapd_id=sid)
                     yield story
 
     for story in iterate_source_stories():
@@ -224,28 +245,37 @@ def run_sync(
             if sid:
                 notion_seen.add(sid)
 
+    reporter.stage_end("fetch", fetched=len(all_stories))
+
     if tracked_enabled and not restrict_to_ids:
         missing_tracked = [sid for sid in tracked_ids if sid and sid not in fetched_ids]
         if missing_tracked:
             print(f"[sync] refreshing tracked stories count={len(missing_tracked)}")
-        for sid in missing_tracked:
+            sys.stdout.flush()
+        for idx, sid in enumerate(missing_tracked, 1):
             try:
                 res = tapd.get_story(sid)
+                story = unwrap_story_payload(res)
+                if not isinstance(story, dict):
+                    print(f"[sync] refresh skip TAPD_ID={sid} ({idx}/{len(missing_tracked)}) (unexpected payload)")
+                    sys.stdout.flush()
+                    continue
+                story.setdefault("id", sid)
+                all_stories.append(story)
+                print(f"[sync] refreshed tracked story id={sid} ({idx}/{len(missing_tracked)})")
+                sys.stdout.flush()
+                if sid:
+                    fetched_ids.add(sid)
+                    if sid not in notion_seen:
+                        notion_candidates.append(story)
+                        notion_seen.add(sid)
             except Exception as exc:
-                print(f"[sync] refresh failed TAPD_ID={sid}: {exc}")
+                print(f"[sync] refresh failed TAPD_ID={sid} ({idx}/{len(missing_tracked)}): {exc}")
+                sys.stdout.flush()
                 continue
-            story = unwrap_story_payload(res)
-            if not isinstance(story, dict):
-                print(f"[sync] refresh skip TAPD_ID={sid} (unexpected payload)")
-                continue
-            story.setdefault("id", sid)
-            all_stories.append(story)
-            if sid:
-                fetched_ids.add(sid)
-                if sid not in notion_seen:
-                    notion_candidates.append(story)
-                    notion_seen.add(sid)
 
+    # Analyze phase: testflow generation
+    reporter.stage_start("analyze", stories=len(all_stories))
     if all_stories:
         execute_testflow = not dry_run
         tf_result = generate_testflow_for_stories(cfg, all_stories, execute=execute_testflow)
@@ -256,7 +286,14 @@ def run_sync(
         )
     else:
         tf_result = None
+    reporter.stage_end("analyze", cases=tf_result.total_cases if tf_result else 0)
 
+    # Log Notion candidates queue summary
+    print(f"[sync] enqueue {len(notion_candidates)} stories for Notion sync")
+    sys.stdout.flush()
+
+    # Notion upsert phase
+    reporter.stage_start("notion", total=len(notion_candidates))
     count = 0
     created_count = 0
     existing_count = 0
@@ -296,15 +333,14 @@ def run_sync(
 
     for story in notion_candidates:
         count += 1
+        tapd_id = story_tapd_id(story)
+        reporter.stage("notion", idx=count, total=len(notion_candidates), tapd_id=tapd_id)
         enrich_story_with_extras(tapd, cfg, story, cache=extras_cache, ctx="sync")
-        # Some TAPD records may carry description=None; coerce to empty string for analyzers
-        text = story.get("description") or ""
-        res = analyze(text)
         props = map_story_to_notion_properties(story)
         blocks = build_page_blocks_from_story(story, cfg=cfg)
-        tapd_id = story_tapd_id(story)
         if not tapd_id or tapd_id in ('', 'None', 'unknown'):
             print("[sync] skip story without valid TAPD id")
+            reporter.stage("notion-write", result="skip", reason="invalid_id")
             continue
         if insert_only and tapd_id:
             # fast check if known
@@ -357,6 +393,8 @@ def run_sync(
                         print(f"[sync] skip create TAPD_ID={tapd_id} (not owned/current-iter)")
                         skipped_count += 1
 
+    reporter.stage_end("notion", created=created_count, existing=existing_count, skipped=skipped_count)
+
     if not dry_run and tracked_enabled and synced_ids:
         try:
             store.add_tracked_story_ids(synced_ids)
@@ -380,6 +418,7 @@ def run_update(
     *,
     dry_run: bool = True,
     create_missing: bool = False,
+    re_analyze: bool = False,
 ) -> None:
     """Manually update pages by TAPD story IDs.
 
@@ -429,11 +468,9 @@ def run_update(
         story.setdefault("id", sid)
         enrich_story_with_extras(tapd, cfg, story, cache=extras_cache, ctx="update")
 
-        # Build blocks with latest analyzers
-        text = story.get("description") or ""
-        res_an = analyze(text)
+        # Build blocks with optional analysis
         props = map_story_to_notion_properties(story)
-        blocks = build_page_blocks_from_story(story, cfg=cfg)
+        blocks = build_page_blocks_from_story(story, cfg=cfg, include_analysis=re_analyze)
 
         try:
             page_id = notion.find_page_by_tapd_id(sid, suppress_errors=False)
@@ -497,6 +534,7 @@ def run_update_all(
     owner: Optional[str] = None,
     creator: Optional[str] = None,
     current_iteration: bool = False,
+    re_analyze: bool = False,
 ) -> UpdateAllResult:
     """Update-only pipeline over TAPD stories.
 
@@ -577,10 +615,8 @@ def run_update_all(
         if not tapd_id:
             continue
         enrich_story_with_extras(tapd, cfg, story, cache=extras_cache, ctx="update-all")
-        text = story.get("description") or ""
-        res_an = analyze(text)
         props = map_story_to_notion_properties(story)
-        blocks = build_page_blocks_from_story(story, cfg=cfg)
+        blocks = build_page_blocks_from_story(story, cfg=cfg, include_analysis=re_analyze)
         # Update-only: try match by TAPD_ID or title (compute blocks first for update path)
         if dry_run:
             page_id = notion.find_page_by_tapd_id(tapd_id) or notion.find_page_by_title(story.get('name') or story.get('title') or '')
@@ -622,6 +658,7 @@ def run_update_from_notion(
     *,
     dry_run: bool = True,
     limit: Optional[int] = None,
+    re_analyze: bool = False,
 ) -> None:
     """Update pages by traversing existing Notion records (safer, no creations).
 
@@ -664,10 +701,8 @@ def run_update_from_notion(
         story = unwrap_story_payload(res) or {}
         story.setdefault("id", sid)
         enrich_story_with_extras(tapd, cfg, story, cache=extras_cache, ctx="update-from-notion")
-        text = story.get("description") or ""
-        res_an = analyze(text)
         props = map_story_to_notion_properties(story)
-        blocks = build_page_blocks_from_story(story, cfg=cfg)
+        blocks = build_page_blocks_from_story(story, cfg=cfg, include_analysis=re_analyze)
         if dry_run:
             print(f"[update-from-notion] would update id={sid} title={props.get('Name')}")
             updated += 1
@@ -998,6 +1033,7 @@ def run_sync_by_modules(
     wipe_first: bool = False,
     insert_only: bool = False,
     current_iteration: bool = False,
+    progress: bool = False,
 ) -> SyncResult:
     start_ts = time.perf_counter()
     last = None if full else (since or store.get_last_sync_at())
@@ -1217,8 +1253,6 @@ def run_sync_by_modules(
             if mod_label:
                 story.setdefault("module", mod_label)
             enrich_story_with_extras(tapd, cfg, story, cache=extras_cache, ctx="sync-mod")
-            text = story.get("description") or ""
-            res = analyze(text)
             props = map_story_to_notion_properties(story)
             blocks = build_page_blocks_from_story(story, cfg=cfg)
             raw_id = story.get('id')
